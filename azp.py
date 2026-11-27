@@ -28,6 +28,7 @@ def cmd_status(args: argparse.Namespace) -> None:
                 "size": [gw.width, gw.height],
                 "privilege": priv,
                 "hud": hud,
+                "in_home_ranch": coop.is_home_ranch(img),
                 "minimap": mm,
                 "red_dots": dots,
             },
@@ -142,6 +143,34 @@ def cmd_claim_daily(args: argparse.Namespace) -> None:
     print(json.dumps({"ok": True, "daily": r1, "bp": r2}, ensure_ascii=False, indent=2))
 
 
+def cmd_claim_valley(args: argparse.Namespace) -> None:
+    res = actions.claim_valley_treasure(lv_clicks=args.clicks)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_claim_events(args: argparse.Namespace) -> None:
+    res = actions.claim_event_rewards(journal_clicks=args.clicks)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_world_map(args: argparse.Namespace) -> None:
+    res = actions.switch_world_zone(args.zone, open_map_first=not args.map_open)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_exit_home(args: argparse.Namespace) -> None:
+    res = actions.exit_home_ranch(timeout=args.timeout)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_mask_uid(args: argparse.Namespace) -> None:
+    color = tuple(args.color)
+    if args.out and len(args.paths) != 1:
+        raise SystemExit("--out can only be used with a single input path")
+    results = [vision.mask_uid_image(p, out_path=args.out, color=color) for p in args.paths]
+    print(json.dumps({"ok": True, "count": len(results), "results": results}, ensure_ascii=False, indent=2))
+
+
 def cmd_pois(args: argparse.Namespace) -> None:
     gw = find_game_window()
     img = capture_client(gw=gw)
@@ -196,6 +225,7 @@ def cmd_coop_explore(args: argparse.Namespace) -> None:
         max_idle_wait=args.max_wait,
         step_sec=args.step_sec,
         snap_dir=args.snap_dir,
+        auto_exit_home=not args.no_exit_home,
     )
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
@@ -338,6 +368,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tasks", type=int, default=4)
     s.set_defaults(func=cmd_claim_daily)
 
+    s = sub.add_parser("claim-valley", help="Auto-claim regional Exploration / 山谷秘藏 milestone rewards")
+    s.add_argument("--clicks", type=int, default=2)
+    s.set_defaults(func=cmd_claim_valley)
+
+    s = sub.add_parser("claim-events", help="Safely claim F1 星临旅记 event rewards")
+    s.add_argument("--clicks", type=int, default=2)
+    s.set_defaults(func=cmd_claim_events)
+
+    s = sub.add_parser("world-map", help="Switch region map via 世界地图 (charlulu / sprout_valley)")
+    s.add_argument("zone", choices=list(actions.WORLD_ZONES.keys()))
+    s.add_argument("--map-open", action="store_true", help="Skip pressing M if map is already open")
+    s.set_defaults(func=cmd_world_map)
+
+    s = sub.add_parser("exit-home", help="Exit Home Ranch (星临者的家园) via H -> 确认 and wait for open-world HUD")
+    s.add_argument("--timeout", type=float, default=18.0)
+    s.set_defaults(func=cmd_exit_home)
+
+    s = sub.add_parser("mask-uid", help="Mask bottom-left UID region on screenshots with opaque solid box before git commit")
+    s.add_argument("paths", nargs="+", help="One or more PNG/JPG screenshot paths")
+    s.add_argument("--out", default=None, help="Optional output path (only valid for single input)")
+    s.add_argument("--color", nargs=3, type=int, default=[18, 22, 26], metavar=("R", "G", "B"))
+    s.set_defaults(func=cmd_mask_uid)
+
     s = sub.add_parser("pois", help="Detect player heading and clustered minimap POI bearings")
     s.set_defaults(func=cmd_pois)
 
@@ -367,12 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--require-unfocused", action="store_true")
     s.set_defaults(func=cmd_bg_explore)
 
-    s = sub.add_parser("coop-explore", help="Idle-aware cooperative exploration (runs only when user is idle)")
+    s = sub.add_parser("coop-explore", help="Idle-aware cooperative exploration (runs only when user is physically idle)")
     s.add_argument("--steps", type=int, default=12)
     s.add_argument("--idle-sec", type=float, default=15.0)
     s.add_argument("--max-wait", type=float, default=90.0)
     s.add_argument("--step-sec", type=float, default=2.4)
     s.add_argument("--snap-dir", default=None)
+    s.add_argument("--no-exit-home", action="store_true", help="Do not auto-exit Home Ranch when detected")
     s.set_defaults(func=cmd_coop_explore)
 
     s = sub.add_parser("combat", help="Run active combat rotation")

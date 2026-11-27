@@ -4,8 +4,10 @@ All coordinates below are in **game client pixels (`1920×1080`)**, converted to
 
 ## 1. HUD & Vision Calibration (`azp/vision.py`)
 
-- **Open-World HP Bar**: `x=830..1090, y=996..1006` (calibrated bright white rows at `y=998..1003`, ratio `> 0.14` indicates live HUD).
-- **Loading Screen**: Solid dark/light frames OR Azur Promilia's dark-navy bottom tip banner at `x=80..1840, y=820..1070` (`mean < 42.0` and `std < 24.0`).
+- **Open-World HP Bar & Q-Skill Slot**: HP bar at `x=830..1090, y=996..1006` (`ratio > 0.14`) AND combat `Q` slot at `x=1600..1696, y=942..1038` (`std > 28.0`, cleanly distinguishes Open World from Home Ranch where `Q` slot is absent even when bottom unlock text overlaps `y=996..1006`).
+- **Loading Screen**: Solid dark/light frames OR Azur Promilia's dark-navy (blue-dominant `B >= G`) bottom tip banner at `x=80..1840, y=820..1070` (`mean < 42.0` and `std < 22.0`). Requiring `B >= G` prevents dark night-time grass (`G > B + 8`) from falsely triggering loading state.
+- **Home Ranch (`星临者的家园`) & Exit Dialog (`H`)**: Detected when not loading, `in_world_hud == False`, and minimap golden arrow heading is visible (`is_home_ranch`). Pressing `H` opens a centered white modal (`x=520..1400, y=420..560`, white ratio `> 0.78`) with `确认` at `(1258, 676)` (`azp.py exit-home`).
+- **Bottom-Left UID Mask Box (`mask-uid`)**: Normalized `(80/1440, 778/810, 272/1440, 1.0)` filled with opaque `(18, 22, 26)` (covers `(83, 781, 266, 810)` on 1440×810 and `(107, 1037, 363, 1080)` on 1920×1080).
 - **`[F]` Interact Pill**: Active white/light-gray option bar at `x=1145..1420, y=548..590` (bright low-saturation pixel ratio `> 0.35`).
 - **Kibo Puzzle `Q` Glow**: `x=1600..1696, y=942..1038` (bright gold/green aura ratio `> 0.20`).
 - **Enemy Combat Red HP Bars**: `x=260..1540, y=150..740`, contiguous horizontal red runs `>= 36px` (`R>205, G<72, B<72, R-G>140`), vertical span `3..32` rows (filters out red village banners and archery targets).
@@ -78,4 +80,4 @@ Empirically verified on Windows 11 with elevated `AzurPromilia.exe` (`UnityWndCl
 | `SendInput` scan codes (`input_ctl.py`) | ✅ Works (Admin) | ❌ Needs focus | Requires elevated caller (`can_send_input: true`). |
 | `PostMessage` `WM_KEYDOWN` | — | ❌ Ignored (`diff=0.01`) | Blocked by Unity Raw Input / `GameInputRawInputProxy.exe`. |
 | `ViGEmBus` Virtual Xbox 360 (`gamepad.py`) | ✅ Switches to Xbox UI | ❌ Ignored (`mm_diff=0.25`) | Game mutes XInput when unfocused. |
-| Idle-Aware Cooperative (`coop-explore`) | ✅ Yields on user input | ✅ Waits until idle | Safe way to share one desktop without fighting the user. |
+| Idle-Aware Cooperative (`coop-explore`) | ✅ Yields in ~30ms via `PhysicalInputMonitor` | ✅ Waits until physically idle | Uses read-only `WH_KEYBOARD_LL`/`WH_MOUSE_LL` (`INJECTED` flag filter) to distinguish physical user input from our own `SendInput`. |

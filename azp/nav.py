@@ -119,12 +119,17 @@ def approach_poi(
     walk_sec: float = 2.4,
     sprint: bool = True,
     px_per_deg: float = 8.4,
+    abort_fn=None,
 ) -> Dict[str, object]:
     """Turn toward target_bearing (0=N, 90=E) using current player arrow heading and sprint forward."""
     gw = focus_game()
+    if abort_fn is not None and abort_fn():
+        return {"aborted": True}
     # Brief tap forward so character arrow aligns with camera
     ctl.hold_keys(["w"], 0.14)
     time.sleep(0.12)
+    if abort_fn is not None and abort_fn():
+        return {"aborted": True}
     img = capture_client(gw=gw)
     heading = estimate_player_heading(img)
     turned_dx = 0
@@ -134,13 +139,16 @@ def approach_poi(
         if abs(turned_dx) > 25:
             actions.turn_camera(turned_dx, 0, steps=max(6, min(18, abs(turned_dx) // 70)))
             time.sleep(0.12)
+    if abort_fn is not None and abort_fn():
+        return {"aborted": True}
 
-    actions.walk("w", duration=walk_sec, sprint=sprint, spam_f=True)
+    completed = actions.walk("w", duration=walk_sec, sprint=sprint, spam_f=True, abort_fn=abort_fn)
     img2 = capture_client(gw=gw)
     return {
         "heading_before": heading,
         "target_bearing": target_bearing,
         "turned_dx": turned_dx,
+        "aborted": not completed,
         "hud_after": vision.check_hud_state(img2),
         "pois_after": detect_minimap_pois(img2),
     }

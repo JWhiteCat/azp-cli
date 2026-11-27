@@ -1,10 +1,15 @@
 """Lightweight PIL+NumPy vision utilities calibrated for 1920x1080 AzurPromilia."""
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+import os
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
+
+# Calibrated bottom-left UID bounding box normalized to 1440x810 (matches (80, 778, 272, 810))
+UID_BOX_NORM: Tuple[float, float, float, float] = (80.0 / 1440.0, 778.0 / 810.0, 272.0 / 1440.0, 1.0)
+DEFAULT_UID_MASK_COLOR: Tuple[int, int, int] = (18, 22, 26)
 
 
 # Top-right menu icon red-dot approximate centers on 1920x1080
@@ -49,11 +54,53 @@ def is_loading_screen(img: Image.Image) -> bool:
     std_v = float(arr.std())
     if (mean_v < 18.0 and std_v < 25.0) or (mean_v > 235.0 and std_v < 25.0):
         return True
-    # AzurPromilia loading screen has a uniform dark-navy banner at y=810..1075
+    # AzurPromilia loading screen has a uniform dark-navy (blue-dominant) banner at y=810..1075
     bot = arr[820:1070, 80:1840]
-    bot_mean = float(bot.mean())
+    bot_rgb = bot.mean(axis=(0, 1))
+    bot_mean = float(bot_rgb.mean())
     bot_std = float(bot.std())
-    return bot_mean < 42.0 and bot_std < 24.0
+    return bot_mean < 42.0 and bot_std < 22.0 and float(bot_rgb[2]) >= float(bot_rgb[1])
+
+
+def is_confirm_dialog(img: Image.Image) -> bool:
+    """Detect centered white modal confirmation box (e.g. 是否要离开家园?) with 确认 at (1258, 676)."""
+    arr = _norm_arr(img)
+    dlg = arr[420:560, 520:1400]
+    white_ratio = float(((dlg[:, :, 0] > 215) & (dlg[:, :, 1] > 215) & (dlg[:, :, 2] > 215)).mean())
+    return white_ratio > 0.78
+
+
+def mask_uid_image(
+    src: Union[str, Image.Image],
+    out_path: Optional[str] = None,
+    color: Tuple[int, int, int] = DEFAULT_UID_MASK_COLOR,
+) -> Dict[str, object]:
+    """Paint an opaque solid box over the bottom-left UID area (safe for committing screenshots)."""
+    if isinstance(src, str):
+        im = Image.open(src).convert("RGB")
+        target_path = out_path or src
+    else:
+        im = src.convert("RGB")
+        target_path = out_path
+
+    w, h = im.size
+    x1 = int(round(UID_BOX_NORM[0] * w))
+    y1 = int(round(UID_BOX_NORM[1] * h))
+    x2 = int(round(UID_BOX_NORM[2] * w))
+    y2 = int(round(UID_BOX_NORM[3] * h))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle([x1, y1, x2, y2], fill=color)
+
+    if target_path:
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        im.save(target_path)
+
+    return {
+        "saved": target_path,
+        "size": [w, h],
+        "uid_box": [x1, y1, x2, y2],
+        "color": list(color),
+    }
 
 
 def detect_red_dots(img: Image.Image) -> List[str]:
@@ -99,9 +146,9 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     hp_strip = arr[996:1006, 830:1090]
     hp_bright = float(((hp_strip[:, :, 0] > 180) & (hp_strip[:, :, 1] > 180) & (hp_strip[:, :, 2] > 180)).mean())
 
-    # 2. Skill buttons bottom-right (y=920..1040, x=1420..1870)
-    skill_roi = arr[920:1040, 1420:1870]
-    skill_std = float(skill_roi.std())
+    # 2. Combat Q-skill slot bottom-right (y=942..1038, x=1600..1696; absent in Home Ranch)
+    q_slot = arr[942:1038, 1600:1696]
+    skill_std = float(q_slot.std())
 
     # 3. Loading check
     loading = is_loading_screen(img)
@@ -131,10 +178,12 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     near_kibo_puzzle = detect_kibo_puzzle_hint(img)
 
     in_world_hud = (not loading) and (hp_bright > 0.14) and (skill_std > 28.0)
+    confirm_dialog = (not loading) and (not in_world_hud) and is_confirm_dialog(img)
 
     return {
         "in_world_hud": in_world_hud,
         "loading": loading,
+        "confirm_dialog": confirm_dialog,
         "in_combat": in_combat,
         "enemy_bar_rows": bar_rows,
         "hp_bright_ratio": round(hp_bright, 3),

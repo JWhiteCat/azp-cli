@@ -22,12 +22,17 @@ def walk(
     sprint: bool = False,
     jump: bool = False,
     spam_f: bool = False,
-) -> None:
-    """Move character using WASD combinations with optional sprint, jump, and F-interact pickup."""
+    abort_fn=None,
+) -> bool:
+    """Move character using WASD combinations with optional sprint, jump, and F-interact pickup.
+
+    Returns True if completed normally, False if aborted early by abort_fn().
+    """
     ensure_focus()
     keys = [ch for ch in direction.lower() if ch in ("w", "a", "s", "d")]
     if not keys:
         keys = ["w"]
+    completed = True
     try:
         for k in keys:
             ctl.key_down(k)
@@ -40,6 +45,9 @@ def walk(
         next_f = time.time() + 0.15
         next_jump = time.time() + 0.35
         while time.time() < t_end:
+            if abort_fn is not None and abort_fn():
+                completed = False
+                break
             now = time.time()
             if spam_f and now >= next_f:
                 ctl.tap("f", hold=0.04, after=0.0)
@@ -53,6 +61,7 @@ def walk(
             ctl.key_up("shift")
         for k in reversed(keys):
             ctl.key_up(k)
+    return completed
 
 
 def turn_camera(dx: int, dy: int = 0, steps: int = 12, step_delay: float = 0.012) -> None:
@@ -167,6 +176,79 @@ def capture_kibo(throws: int = 1, wait_sec: float = 3.5) -> Dict[str, object]:
     return {"ok": True, "throws": throws}
 
 
+# Calibrated world-overview zone coordinates on 1920x1080 map after clicking 世界地图 (1810, 950)
+WORLD_ZONES: Dict[str, tuple[int, int]] = {
+    "charlulu": (800, 680),       # 夏露露村
+    "sprout_valley": (910, 440),  # 新芽山谷
+}
+
+
+def switch_world_zone(zone: str, open_map_first: bool = True) -> Dict[str, object]:
+    """Open map -> click 世界地图 (1810, 950) -> enter target region map."""
+    key = zone.lower().strip()
+    if key not in WORLD_ZONES:
+        raise ValueError(f"Unknown zone {zone!r}. Valid: {list(WORLD_ZONES)}")
+    gw = ensure_focus()
+    if open_map_first:
+        ctl.tap("m", hold=0.06, after=0.85)
+    ctl.mouse_click_client(1810, 950, gw=gw)
+    time.sleep(0.85)
+    zx, zy = WORLD_ZONES[key]
+    ctl.mouse_click_client(zx, zy, gw=gw)
+    time.sleep(0.9)
+    return {"ok": True, "zone": key, "click": [zx, zy]}
+
+
+def exit_home_ranch(timeout: float = 18.0) -> Dict[str, object]:
+    """Exit Home Ranch (星临者的家园) via H -> 确认 (1258, 676) and wait for open-world HUD."""
+    gw = ensure_focus()
+    img = capture_client(gw=gw)
+    if vision.is_confirm_dialog(img):
+        ctl.mouse_click_client(1258, 676, gw=gw)
+        time.sleep(0.8)
+    else:
+        ctl.tap("h", hold=0.06, after=0.9)
+        chk = capture_client(gw=gw)
+        if vision.is_confirm_dialog(chk):
+            ctl.mouse_click_client(1258, 676, gw=gw)
+            time.sleep(0.8)
+    wait_res = wait_for_hud(timeout=timeout, poll=0.8)
+    return {"ok": wait_res["ok"], "wait": wait_res}
+
+
+def claim_valley_treasure(lv_clicks: int = 2) -> Dict[str, object]:
+    """Open M -> 探索度 (1850, 805) -> 山谷秘藏 (1195, 800) -> claim unlocked milestone rewards."""
+    gw = ensure_focus()
+    ctl.tap("m", hold=0.06, after=0.9)
+    ctl.mouse_click_client(1850, 805, gw=gw)
+    time.sleep(0.8)
+    ctl.mouse_click_client(1195, 800, gw=gw)
+    time.sleep(0.8)
+    for _ in range(lv_clicks):
+        ctl.mouse_click_client(1380, 415, gw=gw)
+        time.sleep(0.75)
+        ctl.mouse_click_client(960, 920, gw=gw)
+        time.sleep(0.45)
+    ctl.tap("esc", hold=0.06, after=0.55)
+    ctl.tap("esc", hold=0.06, after=0.55)
+    return {"ok": True, "panel": "valley_treasure", "clicks": lv_clicks}
+
+
+def claim_event_rewards(journal_clicks: int = 2) -> Dict[str, object]:
+    """Open F1 (活动) -> 星临旅记 (165, 890) -> claim available rewards safely (avoids shifting 前往 rows)."""
+    gw = ensure_focus()
+    ctl.tap("f1", hold=0.06, after=1.1)
+    ctl.mouse_click_client(165, 890, gw=gw)
+    time.sleep(0.8)
+    for _ in range(journal_clicks):
+        ctl.mouse_click_client(1430, 680, gw=gw)
+        time.sleep(0.7)
+        ctl.mouse_click_client(960, 920, gw=gw)
+        time.sleep(0.45)
+    ctl.tap("esc", hold=0.06, after=0.6)
+    return {"ok": True, "panel": "f1_star_journal"}
+
+
 def claim_daily_activity(task_clicks: int = 4) -> Dict[str, object]:
     """Open F5 (日常活跃), claim completed daily tasks and unlocked milestone chests (20..100)."""
     gw = ensure_focus()
@@ -208,6 +290,7 @@ def combat_burst(
     switch_chars: bool = True,
     summon_kibo: bool = True,
     early_exit: bool = True,
+    abort_fn=None,
 ) -> Dict[str, object]:
     """Execute an active combat rotation: Kibo summon + LMB combos + E/Q/R + dodge + char swap."""
     gw = ensure_focus()
@@ -219,15 +302,22 @@ def combat_burst(
     cycle = 0
     char_idx = 1
     no_combat_streak = 0
+    aborted = False
     while time.time() < t_end:
+        if abort_fn is not None and abort_fn():
+            aborted = True
+            break
         cycle += 1
         # Basic attack combo (4 rapid LMB clicks)
         for _ in range(4):
+            if abort_fn is not None and abort_fn():
+                aborted = True
+                break
             ctl.mouse_click_here("left", clicks=1, hold=0.05)
             time.sleep(0.16)
             if time.time() >= t_end:
                 break
-        if time.time() >= t_end:
+        if aborted or time.time() >= t_end:
             break
 
         # Elemental skill E, Kibo skill Q, Ultimate R
@@ -258,10 +348,11 @@ def combat_burst(
             else:
                 no_combat_streak = 0
 
-    # Collect nearby loot drops after combat
-    interact_spam(taps=4, interval=0.18)
+    # Collect nearby loot drops after combat unless user took over
+    if not aborted:
+        interact_spam(taps=4, interval=0.18)
     img = capture_client(gw=gw)
-    return {"elapsed": round(time.time() - t0, 2), "cycles": cycle, "hud": vision.check_hud_state(img)}
+    return {"elapsed": round(time.time() - t0, 2), "cycles": cycle, "aborted": aborted, "hud": vision.check_hud_state(img)}
 
 
 def dialog_advance(max_steps: int = 20, interval: float = 0.45) -> Dict[str, object]:

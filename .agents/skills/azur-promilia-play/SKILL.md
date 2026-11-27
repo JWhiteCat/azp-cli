@@ -16,12 +16,13 @@ Use the existing Python CLI (`azp.py` in the AZP project root) to observe, navig
 
 ## 1. Execution Environment & Preflight Gates
 
-Always follow these three hard platform rules before sending any input:
+Always follow these four hard platform rules before sending any input:
 
-1. **Use `windows-mcp` `PowerShell` for live game commands**:
+1. **Use `windows-mcp` `PowerShell` for live game commands (set `timeout` for long batches)**:
    - Standard `run_command` executes in an isolated sandbox desktop (`exebox-*`) where `EnumWindows` sees 0 windows.
    - Always run `python azp.py ...` that inspects or controls `AzurPromilia.exe` via `windows-mcp` `PowerShell` from the AZP workspace root.
-   - Use `run_command` only for offline file work, analyzing already-saved PNGs, and running `tests/test_offline.py`.
+   - `windows-mcp` `PowerShell` defaults to a **30s timeout**; pass `timeout: 120` (or keep batches to 6–10 steps) when running `coop-explore`, `explore`, or `solve-zuzanka`.
+   - Use `run_command` only for offline file work, analyzing already-saved PNGs, `mask-uid`, and running `tests/test_offline.py`.
 2. **Verify Windows UIPI elevation first**:
    - `AzurPromilia.exe` runs elevated (High integrity). Non-elevated `SendInput` is silently dropped by Windows UIPI.
    - Run preflight via `windows-mcp` `PowerShell` from the AZP project root:
@@ -30,11 +31,13 @@ Always follow these three hard platform rules before sending any input:
      ```
    - Confirm `privilege.can_send_input == true` and `size == [1920, 1080]`.
    - If `can_send_input == false` (`open_process_err == 5`), **stop immediately** and ask the user to restart the `windows-mcp` daemon (`C:\Users\wanj\.windows-mcp\start-server.cmd`) from an Administrator PowerShell. Never attempt to bypass UIPI.
-3. **Respect foreground exclusivity & user activity**:
+3. **Respect foreground exclusivity & user activity (`PhysicalInputMonitor`)**:
    - Empirically verified: `AzurPromilia.exe` supports background `PrintWindow` capture (`azp.py bg-snap`), **but ignores both `PostMessage` and `ViGEmBus` Xbox 360 gamepad input when unfocused**.
    - Before taking foreground control, run `python azp.py bg-snap --out snaps/check.png` to inspect `focused` and `idle_sec`.
-   - If the user is actively using the PC or game (`idle_sec < 15`), do **not** hijack focus; either wait/ask or use `azp.py coop-explore --idle-sec 15`.
+   - If the user is actively using the PC or game (`idle_sec < 15`), do **not** hijack focus; either wait passively (e.g., via `schedule`) or run `azp.py coop-explore --idle-sec 15` (uses read-only `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hooks to distinguish physical input from injected `SendInput` and aborts walks/combat within ~30ms on user takeover).
    - Whenever pausing, asking the user, or finishing a run, always call `windows-mcp` `ControlStatus(release=true)`.
+4. **Exit Home Ranch before open-world runs**:
+   - If `azp.py status` reports `in_home_ranch: true` (or `hud.confirm_dialog: true` for `是否要离开家园？`), run `python azp.py exit-home` (or let `coop-explore` auto-exit Home Ranch; pass `--no-exit-home` to opt out).
 
 ## 2. Core Open-World Exploration & Reward Workflow
 
@@ -42,11 +45,13 @@ Work in tight **observe → act → verify** batches (chain multiple short CLI c
 
 ### Step A — Claim Ready Rewards & Check Goals
 1. Check `red_dots` from `azp.py status`.
-2. Claim completed daily activity & Battle Pass rewards in one call:
+2. Claim ready rewards via one-line commands:
    ```powershell
-   python azp.py claim-daily --tasks 4
+   python azp.py claim-daily --tasks 4   # F5 Daily Activity + F2 Battle Pass
+   python azp.py claim-valley            # M -> 探索度 -> 山谷秘藏 milestones
+   python azp.py claim-events            # F1 星临旅记 (safe against shifting 前往 rows)
    ```
-3. Check regional Exploration Progress (`M` → click `探索度` `(1850, 805)` → click `山谷秘藏` `(1195, 800)`) to track milestones (e.g., Sprout Valley Lv.2 `550` EXP unlocks flying).
+3. Track regional Exploration Progress milestones (e.g., Sprout Valley Lv.2 `550` EXP unlocks flying).
 
 ### Step B — Scout Before Moving
 Avoid blind wandering. Combine minimap POI clustering with 360° scouting:
@@ -73,21 +78,27 @@ python azp.py scan360 --out-dir snaps/scout --prefix s1
 4. **Star Melodies (`星律`), Chests, Wumi (`乌咪`) & New Kibo**:
    - Jump / mount-jump into floating golden Saturn-ring orbs (`星律`).
    - Aim at uncaptured Kibo (species with white card icon next to nameplate) and run `python azp.py capture --throws 1`.
-5. **Fast Travel & Autonomous Patrol**:
-   - Open `M`, snap with `--grid --grid-step 160` if needed, then run `python azp.py teleport <x> <y> --map-open` (automatically clicks waypoint, clicks `传送 (1670, 1000)`, and waits through loading until `in_world_hud: true`).
-   - Run `python azp.py explore --steps 10 --step-sec 2.6 --snap-dir snaps/run1` for autonomous patrol with minimap-diff stuck recovery.
+5. **Fast Travel, Region Switching & Cooperative Patrol**:
+   - Switch region maps via `python azp.py world-map sprout_valley` (or `charlulu`), snap with `--grid --grid-step 160` if needed, then run `python azp.py teleport <x> <y> --map-open`.
+   - Run `python azp.py coop-explore --idle-sec 15 --steps 10 --snap-dir snaps/coop_run` (with `PowerShell(timeout=120)`) for safe idle-aware patrol, or `python azp.py explore --steps 10 --step-sec 2.6` when foreground play is explicitly requested.
 
-## 3. Distilling New Mechanics into the CLI
+## 3. Distilling New Mechanics & Committing Safely
 
 Whenever encountering a new repeatable UI flow, puzzle, or minigame:
 1. Capture a 1920×1080 reference frame with `--grid --grid-step 160` to measure exact client coordinates and color signatures.
 2. For latency-sensitive minigames, use `FastROIGrabber` (Win32 GDI `BitBlt`, ~4ms/frame) from `azp/minigames.py` instead of `PIL.ImageGrab` (~110ms on multi-monitor setups).
 3. Add the reusable function under `azp/` and expose a clean subcommand in `azp.py`.
-4. Add or update offline regression assertions in `tests/test_offline.py` using saved frames in `snaps/`, and update `README.md`.
+4. **Mask UID before committing ANY screenshot**:
+   - Never commit raw screenshots with visible bottom-left UID. Always run:
+     ```powershell
+     python azp.py mask-uid snaps/<raw>.png --out snaps/<fixture>.png
+     ```
+   - Whitelist only masked offline test fixtures in `.gitignore` and add assertions in `tests/test_offline.py` (which enforces masked UID boxes on all committed fixtures).
+5. Update `README.md` and this skill's references when adding subcommands or calibrated coordinates.
 
 ## 4. Verification & Clean Handoff
 
-Before concluding any session:
+Before concluding or committing:
 1. Run offline regression tests and CLI sanity check via `run_command` from the AZP project root:
    ```powershell
    python tests/test_offline.py; python azp.py --help
@@ -98,5 +109,5 @@ Before concluding any session:
 ## References
 
 Load these only when needed:
-- [UI Coordinates, CV Thresholds & Game Mechanics](./references/ui-coordinates-and-mechanics.md) — Calibrated 1920×1080 coordinates, Kibo wheel slots, menu buttons, Zuzanka physics, and background input test matrix.
-- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 27 `azp.py` subcommands and module responsibilities.
+- [UI Coordinates, CV Thresholds & Game Mechanics](./references/ui-coordinates-and-mechanics.md) — Calibrated 1920×1080 coordinates, Kibo wheel slots, menu buttons, Home Ranch exit dialog, Zuzanka physics, and background input test matrix.
+- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 33 `azp.py` subcommands and module responsibilities.

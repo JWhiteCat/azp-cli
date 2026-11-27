@@ -7,13 +7,20 @@ venv/
 .pytest_cache/
 .mypy_cache/
 
-# Runtime screenshots (keep offline test fixtures)
+# Runtime screenshots (keep UID-masked offline test fixtures)
 snaps/*
 !snaps/lake_puz2.png
 !snaps/xinya_arrived.png
 !snaps/back_world.png
 !snaps/kibo_puz3.png
+!snaps/home_ranch.png
+!snaps/home_ranch_unlock.png
+!snaps/home_exit_confirm.png
+!snaps/home_night_grass.png
 
 # OS / IDE
 .DS_Store
 Thumbs.db
+
+# Other
+AGENTS.md
