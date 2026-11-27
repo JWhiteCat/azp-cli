@@ -18,6 +18,12 @@ snaps/*
 !snaps/home_exit_confirm.png
 !snaps/home_night_grass.png
 
+# Runtime navigation costmap cache & YOLO training artifacts
+nav_cache/
+yolo_dataset/
+models/*.onnx
+models/*.pt
+
 # OS / IDE
 .DS_Store
 Thumbs.db

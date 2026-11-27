@@ -33,7 +33,7 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py drag <x1> <y1> <x2> <y2> [--duration 0.35]` | `input_ctl` | Drag between client coordinates (e.g., world map panning) |
 | `python azp.py scroll <delta> [--at x y]` | `input_ctl` | Mouse wheel zoom/list scroll |
 | `python azp.py move --dir <wasd> --sec <s> [--sprint] [--jump] [--spam-f]` | `actions` | Directional movement with optional sprint, jump, and `F` pickup |
-| `python azp.py turn --dx <px> [--dy <px>] [--steps 12]` | `actions` | Relative 3D mouse camera rotation (~`8.4 px/deg`) |
+| `python azp.py turn --dx <px> [--dy <px>] [--steps 12]` | `actions` | Relative 3D mouse camera rotation (~`6.35 px/deg`; keep `|dx|/steps <= 38` to avoid Unity Raw Input clamp) |
 
 ## High-Level Exploration, Combat, Rewards & Minigames
 | Command | Module | Purpose |
@@ -41,7 +41,12 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py mount` | `actions` | Toggle Kibo mount (`T`) |
 | `python azp.py exit-home [--timeout 18]` | `actions` | Exit Home Ranch (`星临者的家园`) via `H` → `确认 (1258, 676)` and wait for open-world HUD |
 | `python azp.py interact [--taps 5] [--interval 0.18]` | `actions` | Rapid `F` tapping for chests, teleporters, pickups |
-| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint]` | `nav` | Align to compass bearing via minimap arrow and sprint forward |
+| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector) and sprint forward with minimap-diff unstuck |
+| `python azp.py nav-bake --map <png> --name <id> [--cell 6] [--preview <png>]` | `navmesh` | Bake 1920×1080 world map into cached 2.5D costmap (roads/grass/slope/ruins/water/boss/fog) |
+| `python azp.py nav-plan --name <id> --start X Y --goal X Y [--mode ground\|fly] [--preview <png>]` | `navmesh` | Plan smoothed 8-connected A* path using 2.5D costmap + online obstacle memory |
+| `python azp.py nav-obstacle <add\|portal\|list\|clear> --name <id> [--xy X Y]` | `navmesh` | Inspect or mutate persisted online obstacle stamps and 3D portal edges (`jump`/`mushroom`/`fly`) |
+| `python azp.py nav-localize --name <id> [--frame <png>] [--hint X Y]` | `navmesh` | Localize player `(x, y)` on baked world map from minimap terrain correlation |
+| `python azp.py nav-goto --name <id> --goal X Y [--start X Y] [--mode ground\|fly]` | `navmesh` | Closed-loop A* navigation that auto-records stuck snags and replans around them |
 | `python azp.py world-map <charlulu\|sprout_valley> [--map-open]` | `actions` | Open `世界地图 (1810, 950)` and enter target region map |
 | `python azp.py teleport <x> <y> [--map-open] [--timeout 18]` | `actions` | Click map waypoint → click `传送` → poll until open-world HUD returns |
 | `python azp.py kibo-puzzle <element> [--wait 2.8]` | `actions` | Hold `Q` wheel and cast specific element (`fire/earth/grass/ice/water/thunder/light`) |
@@ -49,11 +54,29 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py capture [--throws 1] [--wait 3.5]` | `actions` | Star-Bond Kibo capture (`G` → `LMB` → wait → `G`) |
 | `python azp.py combat [--sec 6.0] [--no-switch] [--no-early-exit]` | `actions` | Active combat combo (`Z` + LMB + `E/Q/R` + `Shift` + `1/2/3` swap + post-loot) |
 | `python azp.py solve-zuzanka [--max-drops 12] [--lead 0.23]` | `minigames` | 100Hz `BitBlt` real-time CV solver for `搭建祖赞卡之梯` |
+| `python azp.py solve-race [--max-sec 65] [--gain 0.28] [--restart] [--model <onnx>]` | `minigames`, `detector` | 25Hz `BitBlt` steering solver for `坐骑挑战` (ONNX YOLO or upgraded anti-crystal CV) |
+| `python azp.py solve-cabbage [--max-sec 45] [--gain 0.25] [--model <onnx>]` | `minigames`, `detector` | 25Hz `BitBlt` glowing-seed chaser for `变身菜鸡` (ONNX YOLO or lime-glow CV) |
+
+## Template Matching, RapidOCR & ONNX YOLO Perception
+| Command | Module | Purpose |
+| --- | --- | --- |
+| `python azp.py ocr [--frame <png>] [--roi x1 y1 x2 y2]` | `ocr_tpl` | Run RapidOCR (ONNX) on live client or offline screenshot ROI |
+| `python azp.py read-f [--frame <png>]` | `ocr_tpl` | Read active `[F]` interact prompt text and classify (`chest/facility/star_vein/gather/...`) |
+| `python azp.py hud-markers [--frame <png>] [--kinds ...] [--no-ocr]` | `ocr_tpl` | Detect 3D floating distance icons (`chest/challenge/wumi/egg`) + OCR distance (`m`) |
+| `python azp.py map-pois [--frame <png>] [--ocr]` | `ocr_tpl` | Extract world-map POIs (`star_vein_active/locked`, `facility_locked`, `shop_bag`, `boss`) with `safe_click` guard for `navmesh` |
+| `python azp.py check-anomaly [--frame <png>] [--no-ocr]` | `ocr_tpl` | Classify screen anomalies (`revive`, `tutorial_modal`, `confirm_dialog` + `have/need` check, `build_panel`, `floating_tip`) |
+| `python azp.py recover [--auto-confirm] [--dry-run] [--frame <png>]` | `ocr_tpl` | Automatically recover from death/tutorial/modal/tip screens back to open-world HUD |
+| `python azp.py yolo-detect [--frame <png>] [--model <onnx>] [--classes ...]` | `detector` | Run optional zero-PyTorch ONNX YOLO (`models/azp_yolo.onnx`) or hybrid CV/template fallback |
+| `python azp.py yolo-bench [--model <onnx>] [--frame <png>] [--runs 10]` | `detector` | Benchmark ONNXRuntime / hybrid detector inference latency and FPS |
+| `python azp.py yolo-init-dataset [--out <dir>] [--max-images 120]` | `detector` | Bootstrap UID-masked Ultralytics dataset (`data.yaml`, `train/val`) from `snaps/` |
+| `python azp.py yolo-prelabel [--dataset <dir>] [--min-score 0.76]` | `detector` | Auto-generate initial YOLO `.txt` labels using Part-1 templates + CV |
 | `python azp.py dialog [--max 20]` | `actions` | Advance dialogue/cutscenes until open-world HUD returns |
 | `python azp.py dismiss [--clicks 2]` | `actions` | Dismiss full-screen reward popups (`960, 920`) |
 | `python azp.py claim-daily [--tasks 4]` | `actions` | Auto-claim `F5` Daily Activity tasks/chests + `F2` Travelogue BP |
 | `python azp.py claim-valley [--clicks 2]` | `actions` | Auto-claim `M` → `探索度` → `山谷秘藏` regional exploration rewards |
 | `python azp.py claim-events [--clicks 2]` | `actions` | Safely claim `F1` `星临旅记` event rewards |
+| `python azp.py claim-codex [--clicks 3]` | `actions` | Claim `Esc` → `星临图志` → `调查奖励` star-level Codex rewards |
+| `python azp.py build-facility [--wait 3.0]` | `actions` | Repair or build nearby Booster Facility (`增效设施`) via `F` → `确认`/`建造` |
 
 ## Autonomous, Cooperative & Offline Utilities
 | Command | Module | Purpose |

@@ -1,14 +1,17 @@
 """Reusable computer-vision solvers for AzurPromilia open-world minigames."""
 from __future__ import annotations
 
+import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy import ndimage
 import win32con
 import win32gui
 import win32ui
 
+from . import detector as det_mod
 from . import input_ctl as ctl
 from . import vision
 from .win import capture_client, focus_game
@@ -142,3 +145,172 @@ def solve_zuzanka_ladder(
 
     time.sleep(1.5)
     return {"ok": True, "drops_count": len(drops), "drops": drops}
+
+
+def find_race_waypoint(
+    rgb: np.ndarray,
+    x_offset: int = 80,
+    y_offset: int = 130,
+    yolo: Optional[det_mod.YoloOnnxDetector] = None,
+) -> Optional[Tuple[float, float, int]]:
+    """Detect the next waypoint ring in 坐骑挑战 (ONNX YOLO if loaded, else anti-crystal geometric CV)."""
+    if yolo is not None:
+        dets, _ = yolo.detect_rgb(rgb, classes=("race_ring",))
+        if dets:
+            d = dets[0]
+            return (x_offset + d.cx, y_offset + d.cy, int(d.w * d.h))
+        return None
+    dets = det_mod.detect_race_rings_cv(rgb, roi=(0, 0, rgb.shape[1], rgb.shape[0]))
+    if not dets:
+        return None
+    d = dets[0]
+    return (x_offset + d.cx, y_offset + d.cy, int(d.w * d.h))
+
+
+def solve_mount_race(
+    max_sec: float = 65.0,
+    gain: float = 0.28,
+    restart: bool = False,
+    sprint: bool = True,
+    model_path: Optional[str] = None,
+) -> Dict[str, object]:
+    """Real-time (~25 Hz BitBlt) steering solver for 坐骑挑战 (ONNX YOLO or anti-crystal CV)."""
+    gw = focus_game()
+    yolo: Optional[det_mod.YoloOnnxDetector] = None
+    if model_path:
+        yolo = det_mod.YoloOnnxDetector(model_path=model_path)
+    elif det_mod.is_onnxruntime_available() and os.path.isfile(det_mod.DEFAULT_MODEL_PATH):
+        yolo = det_mod.YoloOnnxDetector(model_path=det_mod.DEFAULT_MODEL_PATH)
+
+    if restart:
+        ctl.tap("p", hold=0.06, after=0.3)
+        time.sleep(5.5)
+
+    l, t, _, _ = gw.client_rect
+    x1, y1, x2, y2 = 80, 130, 1840, 780
+    t0 = time.time()
+    frames = 0
+    seen_frames = 0
+    missed_streak = 0
+    last_err = 0.0
+    next_dash = t0 + 1.2
+    next_hud_chk = t0 + 2.5
+
+    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
+        ctl.key_down("w")
+        if sprint:
+            time.sleep(0.04)
+            ctl.tap("shift", hold=0.05, after=0.02)
+            ctl.key_down("shift")
+        try:
+            while time.time() - t0 < max_sec:
+                now = time.time()
+                rgb = grabber.grab_rgb()
+                frames += 1
+                wp = find_race_waypoint(rgb, x1, y1, yolo=yolo)
+                if wp is not None:
+                    seen_frames += 1
+                    missed_streak = 0
+                    cx, cy, _ = wp
+                    err_x = cx - 960.0
+                    last_err = err_x
+                    if abs(err_x) > 18.0:
+                        step_dx = int(max(-260.0, min(260.0, err_x * gain)))
+                        ctl.mouse_move_rel(step_dx, 0, steps=1, step_delay=0.0)
+                    if abs(err_x) < 150.0 and now >= next_dash:
+                        ctl.tap("e", hold=0.04, after=0.0)
+                        next_dash = now + 3.8
+                else:
+                    missed_streak += 1
+                    # If target orb is behind us (marker briefly vanished), sweep in last known direction
+                    if 6 <= missed_streak <= 45:
+                        sweep = 140 if last_err >= 0 else -140
+                        ctl.mouse_move_rel(sweep, 0, steps=1, step_delay=0.0)
+                    elif missed_streak > 65:
+                        break
+
+                if now >= next_hud_chk:
+                    full = capture_client(gw=gw)
+                    if not vision.check_hud_state(full)["in_world_hud"]:
+                        break
+                    next_hud_chk = now + 1.8
+
+                time.sleep(0.032)
+        finally:
+            if sprint:
+                ctl.key_up("shift")
+            ctl.key_up("w")
+            ctl.release_movement_keys()
+
+    elapsed = round(time.time() - t0, 2)
+    return {
+        "ok": True,
+        "detector": "onnx_yolo" if yolo is not None else "cv_race_v2",
+        "elapsed": elapsed,
+        "frames": frames,
+        "seen_frames": seen_frames,
+        "missed_streak": missed_streak,
+    }
+
+
+def solve_cabbage_run(
+    max_sec: float = 45.0,
+    gain: float = 0.25,
+    model_path: Optional[str] = None,
+) -> Dict[str, object]:
+    """Real-time (~25 Hz BitBlt) seed-chasing solver for 变身菜鸡 (ONNX YOLO or lime-glow CV)."""
+    gw = focus_game()
+    yolo: Optional[det_mod.YoloOnnxDetector] = None
+    if model_path:
+        yolo = det_mod.YoloOnnxDetector(model_path=model_path)
+    elif det_mod.is_onnxruntime_available() and os.path.isfile(det_mod.DEFAULT_MODEL_PATH):
+        yolo = det_mod.YoloOnnxDetector(model_path=det_mod.DEFAULT_MODEL_PATH)
+
+    l, t, _, _ = gw.client_rect
+    x1, y1, x2, y2 = 140, 180, 1780, 880
+    t0 = time.time()
+    frames = 0
+    seen_frames = 0
+    missed_streak = 0
+    last_err = 0.0
+
+    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
+        ctl.key_down("w")
+        try:
+            while time.time() - t0 < max_sec:
+                rgb = grabber.grab_rgb()
+                frames += 1
+                if yolo is not None:
+                    dets, _ = yolo.detect_rgb(rgb, classes=("cabbage_seed",))
+                else:
+                    dets = det_mod.detect_cabbage_seeds_cv(rgb, roi=(0, 0, rgb.shape[1], rgb.shape[0]))
+                if dets:
+                    seen_frames += 1
+                    missed_streak = 0
+                    # Pick closest/largest visible seed
+                    best = max(dets, key=lambda d: (d.w * d.h) * d.score)
+                    cx = x1 + best.cx
+                    err_x = cx - 960.0
+                    last_err = err_x
+                    if abs(err_x) > 20.0:
+                        step_dx = int(max(-220.0, min(220.0, err_x * gain)))
+                        ctl.mouse_move_rel(step_dx, 0, steps=1, step_delay=0.0)
+                else:
+                    missed_streak += 1
+                    if 8 <= missed_streak <= 50:
+                        sweep = 130 if last_err >= 0 else -130
+                        ctl.mouse_move_rel(sweep, 0, steps=1, step_delay=0.0)
+                    elif missed_streak > 70:
+                        break
+                time.sleep(0.035)
+        finally:
+            ctl.key_up("w")
+            ctl.release_movement_keys()
+
+    return {
+        "ok": True,
+        "detector": "onnx_yolo" if yolo is not None else "cv_cabbage_seed",
+        "elapsed": round(time.time() - t0, 2),
+        "frames": frames,
+        "seen_frames": seen_frames,
+    }

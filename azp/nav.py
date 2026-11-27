@@ -70,34 +70,70 @@ def detect_minimap_pois(img) -> List[Dict[str, object]]:
 
 
 def estimate_player_heading(img) -> Optional[float]:
-    """Estimate player golden arrow heading (0=North, 90=East, 180=South, 270=West) from minimap center."""
+    """Estimate player golden arrow heading (0=North, 90=East, 180=S, 270=W) via PCA major axis + skewness.
+
+    Using the 3rd central moment along the principal axis uniquely identifies the sharp acute nose tip
+    of the chevron and avoids 135-180 deg flips onto the rear wingtips.
+    """
     arr = vision._norm_arr(img)
-    s = 15
+    s = 11
     sub = arr[MM_CY - s : MM_CY + s, MM_CX - s : MM_CX + s].astype(np.int16)
-    # Bright golden-yellow arrow body
-    gold = (sub[:, :, 0] > 205) & (sub[:, :, 1] > 165) & (sub[:, :, 2] < 140)
+    # Bright golden-yellow arrow body; isolate the connected component closest to minimap center (s, s)
+    # so nearby yellow fog-border lines or egg/boss icons cannot corrupt the arrow PCA.
+    gold = (sub[:, :, 0] > 200) & (sub[:, :, 1] > 160) & (sub[:, :, 2] < 140)
+    labeled, n = ndimage.label(gold)
+    if n > 1:
+        best_lbl = 0
+        best_d2 = 1e9
+        for lbl_id in range(1, n + 1):
+            ly, lx = np.where(labeled == lbl_id)
+            if len(lx) < 8:
+                continue
+            d2 = float((lx.mean() - s) ** 2 + (ly.mean() - s) ** 2)
+            if d2 < best_d2:
+                best_d2 = d2
+                best_lbl = lbl_id
+        if best_lbl > 0:
+            gold = labeled == best_lbl
     ys, xs = np.where(gold)
-    if len(xs) < 12:
+    if len(xs) < 12 or len(xs) > 150:
         return None
-    cx = float(xs.mean())
-    cy = float(ys.mean())
-    # Tip of the arrow is the furthest golden pixel from the centroid (acute apex of isosceles chevron)
-    dists = (xs - cx) ** 2 + (ys - cy) ** 2
-    tip_i = int(np.argmax(dists))
-    vx = float(xs[tip_i] - cx)
-    vy = float(ys[tip_i] - cy)
-    if math.hypot(vx, vy) < 1.5:
-        return None
-    return round((math.degrees(math.atan2(vx, -vy)) + 360.0) % 360.0, 1)
+    pts = np.stack([xs, ys], axis=1).astype(np.float64)
+    centered = pts - pts.mean(axis=0)
+    cov = np.cov(centered.T)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    major = eigvecs[:, 1]
+    minor = eigvecs[:, 0]
+    proj = centered @ major
+    perp = centered @ minor
+    # An arrowhead is always much narrower at its acute nose tip (~1.3 px std)
+    # than at its flared rear wings (~2.8 px std). Comparing transverse spread on
+    # each side of the centroid eliminates 180-deg flips where 3rd-moment skew is near 0.
+    pos_perp = perp[proj > 0]
+    neg_perp = perp[proj < 0]
+    if len(pos_perp) >= 3 and len(neg_perp) >= 3:
+        w_pos = float(np.std(pos_perp))
+        w_neg = float(np.std(neg_perp))
+        tip = major * (1.0 if w_pos < w_neg else -1.0)
+    else:
+        skew = float(np.mean(proj ** 3))
+        tip = major * (1.0 if skew >= 0 else -1.0)
+    return round((math.degrees(math.atan2(float(tip[0]), -float(tip[1]))) + 360.0) % 360.0, 1)
 
 
 def solve_puzzle_auto(
-    elements: Sequence[str] = ("grass", "fire", "light", "water", "earth", "ice", "thunder"),
+    elements: Sequence[str] = ("grass", "fire", "light", "water", "thunder", "ice", "earth"),
     wait_after: float = 2.6,
 ) -> Dict[str, object]:
-    """Try Kibo puzzle wheel elements sequentially until the Q puzzle glow disappears (solved)."""
+    """Try Kibo puzzle wheel elements sequentially until the Q puzzle glow disappears (solved).
+
+    Guards against empty wheel slots: if clicking a slot leaves the Kibo wheel open
+    (``in_world_hud == False``), presses Esc to dismiss the wheel and continues trying
+    instead of falsely treating the cleared HUD as solved.
+    """
     gw = focus_game()
     tried: List[str] = []
+    skipped_empty: List[str] = []
     solved_by: Optional[str] = None
 
     for el in elements:
@@ -105,49 +141,105 @@ def solve_puzzle_auto(
         tried.append(el)
         img = capture_client(gw=gw)
         hud = vision.check_hud_state(img)
+        if not hud["in_world_hud"] and not hud["loading"]:
+            # Clicked an empty slot on the wheel; close wheel and keep trying
+            ctl.tap("esc", hold=0.06, after=0.35)
+            skipped_empty.append(el)
+            continue
         if not hud["near_kibo_puzzle"]:
             solved_by = el
             break
 
     # Loot any spawned rewards/drops
     actions.interact_spam(taps=4, interval=0.2)
-    return {"ok": solved_by is not None, "solved_by": solved_by, "tried": tried}
+    return {"ok": solved_by is not None, "solved_by": solved_by, "tried": tried, "skipped_empty": skipped_empty}
 
 
 def approach_poi(
     target_bearing: float,
     walk_sec: float = 2.4,
     sprint: bool = True,
-    px_per_deg: float = 8.4,
+    px_per_deg: float = 6.35,
+    spam_f: bool = True,
+    unstuck: bool = True,
     abort_fn=None,
 ) -> Dict[str, object]:
-    """Turn toward target_bearing (0=N, 90=E) using current player arrow heading and sprint forward."""
+    """Turn toward target_bearing (0=N, 90=E) using current player arrow heading and sprint forward.
+
+    When ``unstuck`` is enabled on runs longer than ~2.5s, monitors minimap frame diff between
+    ~2.2s segments and performs an automatic jump + sidestep maneuver if snagged on terrain.
+    """
     gw = focus_game()
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
-    # Brief tap forward so character arrow aligns with camera
-    ctl.hold_keys(["w"], 0.14)
-    time.sleep(0.12)
+    # Brief tap forward so character/mount arrow aligns with camera even after S/A/D movement
+    ctl.hold_keys(["w"], 0.24)
+    time.sleep(0.14)
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
     img = capture_client(gw=gw)
     heading = estimate_player_heading(img)
     turned_dx = 0
     if heading is not None:
-        delta = (target_bearing - heading + 180.0) % 360.0 - 180.0
-        turned_dx = int(round(delta * px_per_deg))
-        if abs(turned_dx) > 25:
-            actions.turn_camera(turned_dx, 0, steps=max(6, min(18, abs(turned_dx) // 70)))
+        # 2-pass closed-loop yaw alignment: compensates for foot vs mount camera sensitivity differences
+        cur_heading = heading
+        for pass_idx in range(2):
+            delta = (target_bearing - cur_heading + 180.0) % 360.0 - 180.0
+            if abs(delta) <= (5.0 if pass_idx == 0 else 10.0):
+                break
+            gain = px_per_deg if pass_idx == 0 else 9.5
+            step_dx = int(round(delta * gain))
+            if abs(step_dx) <= 25:
+                break
+            # Keep per-step delta <= ~38px so Unity Raw Input never drops large single-frame deltas
+            actions.turn_camera(step_dx, 0, steps=max(8, abs(step_dx) // 35), step_delay=0.010)
+            turned_dx += step_dx
             time.sleep(0.12)
+            if pass_idx == 0:
+                if abort_fn is not None and abort_fn():
+                    return {"aborted": True}
+                ctl.hold_keys(["w"], 0.22)
+                time.sleep(0.10)
+                h2 = estimate_player_heading(capture_client(gw=gw))
+                if h2 is None:
+                    break
+                cur_heading = h2
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
 
-    completed = actions.walk("w", duration=walk_sec, sprint=sprint, spam_f=True, abort_fn=abort_fn)
+    unstuck_count = 0
+    completed = True
+    if not unstuck or walk_sec <= 2.6:
+        completed = actions.walk("w", duration=walk_sec, sprint=sprint, spam_f=spam_f, abort_fn=abort_fn)
+    else:
+        remaining = float(walk_sec)
+        prev_img = capture_client(gw=gw)
+        side_idx = 0
+        while remaining > 0.05:
+            seg = min(2.2, remaining)
+            completed = actions.walk("w", duration=seg, sprint=sprint, spam_f=spam_f, abort_fn=abort_fn)
+            remaining -= seg
+            if not completed:
+                break
+            cur_img = capture_client(gw=gw)
+            cur_hud = vision.check_hud_state(cur_img)
+            if not cur_hud["in_world_hud"]:
+                # Opened a repair/build dialog, tutorial, or cutscene — stop immediately
+                break
+            mm_diff = vision.frame_diff(prev_img, cur_img, roi=(65, 45, 220, 198))
+            prev_img = cur_img
+            if mm_diff < 2.8 and remaining > 0.4:
+                unstuck_count += 1
+                side_key = "d" if (side_idx % 2 == 0) else "a"
+                side_idx += 1
+                actions.walk(f"w{side_key}", duration=0.85, sprint=sprint, jump=True, spam_f=False, abort_fn=abort_fn)
+                prev_img = capture_client(gw=gw)
     img2 = capture_client(gw=gw)
     return {
         "heading_before": heading,
         "target_bearing": target_bearing,
         "turned_dx": turned_dx,
+        "unstuck_count": unstuck_count,
         "aborted": not completed,
         "hud_after": vision.check_hud_state(img2),
         "pois_after": detect_minimap_pois(img2),

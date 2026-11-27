@@ -104,9 +104,9 @@ def kibo_puzzle(element: str, wait_after: float = 2.8) -> Dict[str, object]:
 
 
 def toggle_mount() -> Dict[str, object]:
-    """Summon or dismount Kibo mount via T."""
+    """Summon or dismount Kibo mount via T (waits 0.95s so mount camera lock finishes)."""
     ensure_focus()
-    ctl.tap("t", hold=0.06, after=0.4)
+    ctl.tap("t", hold=0.06, after=0.95)
     return {"ok": True, "action": "toggle_mount"}
 
 
@@ -135,16 +135,26 @@ def wait_for_hud(timeout: float = 18.0, poll: float = 0.6) -> Dict[str, object]:
 
 
 def map_teleport(map_x: float, map_y: float, open_map_first: bool = True, timeout: float = 18.0) -> Dict[str, object]:
-    """Click a waypoint at (map_x, map_y) on the 1920x1080 map, click 传送 (1670, 1000), and wait for HUD."""
+    """Click a waypoint at (map_x, map_y) on the 1920x1080 map, click 传送 (1670, 1000), and wait for HUD.
+
+    Automatically pans the map upward first if ``map_y >= 885`` so the bottom zoom bar never intercepts the click.
+    """
     gw = ensure_focus()
     if open_map_first:
         ctl.tap("m", hold=0.06, after=0.85)
-    ctl.mouse_click_client(map_x, map_y, gw=gw)
+    click_x, click_y = float(map_x), float(map_y)
+    dragged_dy = 0.0
+    if click_y >= 885.0:
+        dragged_dy = 600.0 - click_y  # negative -> drag map upward
+        ctl.mouse_drag_client(960, 720, 960, 720 + dragged_dy, duration=0.35, steps=16, gw=gw)
+        time.sleep(0.45)
+        click_y = 600.0
+    ctl.mouse_click_client(click_x, click_y, gw=gw)
     time.sleep(0.75)
     ctl.mouse_click_client(1670, 1000, gw=gw)
     time.sleep(1.5)
     res = wait_for_hud(timeout=timeout)
-    return {"ok": res["ok"], "target": [map_x, map_y], "wait": res}
+    return {"ok": res["ok"], "target": [map_x, map_y], "clicked": [click_x, click_y], "dragged_dy": dragged_dy, "wait": res}
 
 
 def scan360(out_dir: str, prefix: str = "scan", yaw_step: int = 750, scale: float = 0.75) -> Dict[str, object]:
@@ -283,6 +293,45 @@ def claim_travelogue_bp() -> Dict[str, object]:
     time.sleep(0.5)
     ctl.tap("esc", hold=0.06, after=0.6)
     return {"ok": True, "panel": "f2_travelogue"}
+
+
+def claim_codex_rewards(clicks: int = 3) -> Dict[str, object]:
+    """Open Esc -> 星临图志 (1345, 990) -> 调查奖励 (1835, 995) and claim star-level Codex rewards."""
+    gw = ensure_focus()
+    ctl.tap("esc", hold=0.06, after=0.9)
+    ctl.mouse_click_client(1345, 990, gw=gw)
+    time.sleep(1.1)
+    for _ in range(max(1, clicks)):
+        ctl.mouse_click_client(1835, 995, gw=gw)
+        time.sleep(0.8)
+        ctl.mouse_click_client(960, 950, gw=gw)
+        time.sleep(0.5)
+    ctl.mouse_click_client(1865, 50, gw=gw)
+    time.sleep(0.6)
+    ctl.tap("esc", hold=0.06, after=0.5)
+    return {"ok": True, "panel": "codex_investigation", "clicks": clicks}
+
+
+def build_booster_facility(wait_after: float = 3.0) -> Dict[str, object]:
+    """Interact with a nearby Booster Facility (增效设施): handles both white repair modal and side build panel."""
+    gw = ensure_focus()
+    ctl.tap("f", hold=0.06, after=0.75)
+    img = capture_client(gw=gw)
+    if vision.is_confirm_dialog(img):
+        ctl.mouse_click_client(1258, 676, gw=gw)
+        time.sleep(wait_after)
+        dismiss_reward(clicks=2, interval=0.5)
+        return {"ok": True, "mode": "repair_modal"}
+    hud = vision.check_hud_state(img)
+    if not hud["in_world_hud"] and not hud["loading"]:
+        # Right-hand 建造增效设施 parchment card: click 建造 (1570, 888), wait, then close X (1865, 50)
+        ctl.mouse_click_client(1570, 888, gw=gw)
+        time.sleep(wait_after)
+        ctl.mouse_click_client(1865, 50, gw=gw)
+        time.sleep(0.6)
+        dismiss_reward(clicks=1, interval=0.4)
+        return {"ok": True, "mode": "build_panel"}
+    return {"ok": False, "mode": "no_dialog", "hud": hud}
 
 
 def combat_burst(

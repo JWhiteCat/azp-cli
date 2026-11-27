@@ -65,8 +65,11 @@ Holding `Q` for `0.85s` and releasing opens a 3×3 diamond grid (`点击直接�
 
 ## 5. Key Controls & Movement Notes
 
-- **3D Camera Yaw Calibration**: Roughly `8.4 px/deg` (`dx = 750` ≈ 90° right turn).
-- **Mount (`T`)**: Fast ground travel + high jump (`Space`) for floating Star Melodies; auto-dismounts in deep water.
+- **3D Camera Yaw Calibration**: Empirically **`6.35 px/deg`** (`dx = 572` ≈ 90° right turn). Keep per-step delta `<= ~38px` (`steps = max(8, abs(dx) // 35)`) so Unity Raw Input never clamps large single-frame turns.
+- **Minimap Arrow vs Camera Alignment**: The minimap golden arrow shows the **character/mount body heading** (estimated via center-most connected golden component + PCA major axis + narrow-tip vs flared-wing transverse width, avoiding 180° flips). After `S`/`A`/`D` movement, tap `W` (`~0.24s`) before reading heading so body & camera realign.
+- **Mount (`T`)**: Fast ground travel + high jump (`Space`) for floating Star Melodies; auto-dismounts in deep water. Mount-up animation locks camera yaw for ~`0.9s` (`toggle_mount()` waits `0.95s`). Restock mount snacks via `hold T → 零食袋 (560, 720) → 一键添加 (1780, 975)`.
+- **Booster Facilities (`增效设施`)**: Pressing `F` opens either the universal white repair modal (`确认 (1258, 676)`, `取消 (950, 676)`) or the right-hand parchment build panel (`建造 (1570, 888)`, close `X (1865, 50)`). Note: some facilities consume `尘石` (mined in world or `家园-风铜矿场`).
+- **Esc Menu Panels**: `星临图志 (1345, 990)` → `调查奖励 (1835, 995)` → `点击继续 (960, 950)`; `成就 (1728, 990)`; close `X (1865, 50)`. `Y` (`星之旅录`) tabs at `x=230, y=185/290/395/495/595`.
 - **Kibo Capture (`G`)**: Press `G` to enter Star-Bond aim mode → `LMB` throws card → wait ~3.5s → press `G` to exit.
 - **Combat Rotation**: `Z` summon Kibo → 4× `LMB` → `E` → `Q`/`R` → `Shift` dodge → rotate `1/2/3`. Use `--no-early-exit` for 3-wave rifts so spawn gaps do not terminate combat early.
 

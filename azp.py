@@ -7,7 +7,9 @@ import os
 import sys
 import time
 
-from azp import actions, bg_play, coop, gamepad, input_ctl as ctl, minigames, mumu, nav, vision
+from PIL import Image
+
+from azp import actions, bg_play, coop, detector, gamepad, input_ctl as ctl, minigames, mumu, nav, navmesh, ocr_tpl, vision
 from azp.win import capture_background, capture_client, check_input_privilege, find_game_window, focus_game, is_focused, user_idle_seconds
 
 
@@ -183,6 +185,26 @@ def cmd_solve_zuzanka(args: argparse.Namespace) -> None:
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+def cmd_solve_race(args: argparse.Namespace) -> None:
+    res = minigames.solve_mount_race(
+        max_sec=args.max_sec,
+        gain=args.gain,
+        restart=args.restart,
+        sprint=not args.no_sprint,
+        model_path=args.model,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_solve_cabbage(args: argparse.Namespace) -> None:
+    res = minigames.solve_cabbage_run(
+        max_sec=args.max_sec,
+        gain=args.gain,
+        model_path=args.model,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
 def cmd_capture(args: argparse.Namespace) -> None:
     print(json.dumps(actions.capture_kibo(throws=args.throws, wait_sec=args.wait), ensure_ascii=False))
 
@@ -200,6 +222,16 @@ def cmd_claim_valley(args: argparse.Namespace) -> None:
 
 def cmd_claim_events(args: argparse.Namespace) -> None:
     res = actions.claim_event_rewards(journal_clicks=args.clicks)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_claim_codex(args: argparse.Namespace) -> None:
+    res = actions.claim_codex_rewards(clicks=args.clicks)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_build_facility(args: argparse.Namespace) -> None:
+    res = actions.build_booster_facility(wait_after=args.wait)
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
@@ -249,7 +281,119 @@ def cmd_solve_puzzle(args: argparse.Namespace) -> None:
 
 
 def cmd_goto_bearing(args: argparse.Namespace) -> None:
-    res = nav.approach_poi(target_bearing=args.deg, walk_sec=args.sec, sprint=not args.no_sprint)
+    res = nav.approach_poi(
+        target_bearing=args.deg,
+        walk_sec=args.sec,
+        sprint=not args.no_sprint,
+        spam_f=not args.no_spam_f,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_nav_bake(args: argparse.Namespace) -> None:
+    im = Image.open(args.map)
+    cmap = navmesh.CostMap25D.bake_from_image(
+        im,
+        name=args.name,
+        cell_size=args.cell,
+        source_image=args.map,
+        px_per_sec=args.px_per_sec,
+    )
+    saved = cmap.save(cache_dir=args.cache_dir)
+    if args.preview:
+        cmap.render_debug_overlay(base_image=im, mode="ground", out_path=args.preview)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "name": cmap.name,
+                "grid_shape": [cmap.gh, cmap.gw],
+                "cell_size": cmap.cell_size,
+                "stats": cmap.terrain_stats(),
+                "saved": saved,
+                "preview": args.preview,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_nav_plan(args: argparse.Namespace) -> None:
+    cmap = navmesh.CostMap25D.load(args.name, cache_dir=args.cache_dir)
+    plan = cmap.find_path(
+        (args.start[0], args.start[1]),
+        (args.goal[0], args.goal[1]),
+        mode=args.mode,
+        smooth=not args.no_smooth,
+    )
+    if args.preview:
+        base_im = Image.open(cmap.source_image) if (cmap.source_image and os.path.isfile(cmap.source_image)) else None
+        cmap.render_debug_overlay(base_image=base_im, path_result=plan, mode=args.mode, out_path=args.preview)
+        plan["preview"] = args.preview
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
+
+
+def cmd_nav_obstacle(args: argparse.Namespace) -> None:
+    cmap = navmesh.CostMap25D.load(args.name, cache_dir=args.cache_dir)
+    mem_path = os.path.join(args.cache_dir, f"{cmap.name}_memory.json")
+    if args.op == "add":
+        if args.xy is None:
+            raise SystemExit("nav-obstacle add requires --xy X Y")
+        rec = cmap.memory.record_obstacle(
+            args.xy[0],
+            args.xy[1],
+            radius=args.radius,
+            penalty=args.penalty,
+            reason=args.reason,
+        )
+        cmap.memory.save(mem_path)
+        print(json.dumps({"ok": True, "op": "add", "record": rec.__dict__, "total": len(cmap.memory.obstacles)}, ensure_ascii=False, indent=2))
+    elif args.op == "portal":
+        if args.xy is None or args.dst is None:
+            raise SystemExit("nav-obstacle portal requires --xy X1 Y1 --dst X2 Y2")
+        edge = cmap.memory.add_portal(
+            args.xy[0], args.xy[1], args.dst[0], args.dst[1], action=args.action, cost=args.cost, label=args.reason
+        )
+        cmap.memory.save(mem_path)
+        print(json.dumps({"ok": True, "op": "portal", "edge": edge.__dict__, "total": len(cmap.memory.portals)}, ensure_ascii=False, indent=2))
+    elif args.op == "clear":
+        cmap.memory.clear()
+        cmap.memory.save(mem_path)
+        print(json.dumps({"ok": True, "op": "clear"}, ensure_ascii=False))
+    else:
+        print(json.dumps({"ok": True, "op": "list", "memory": cmap.memory.to_dict()}, ensure_ascii=False, indent=2))
+
+
+def cmd_nav_localize(args: argparse.Namespace) -> None:
+    cmap = navmesh.CostMap25D.load(args.name, cache_dir=args.cache_dir)
+    if args.frame:
+        frame = Image.open(args.frame)
+    elif _is_mumu(args):
+        with _open_mumu(args) as mm:
+            frame = mm.screencap()
+    else:
+        gw = find_game_window()
+        frame = capture_client(gw=gw)
+    hint = (args.hint[0], args.hint[1]) if args.hint else None
+    res = cmap.localize_minimap(frame, hint_xy=hint, search_radius_px=args.radius)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_nav_goto(args: argparse.Namespace) -> None:
+    cmap = navmesh.CostMap25D.load(args.name, cache_dir=args.cache_dir)
+    start_xy = (args.start[0], args.start[1]) if args.start else None
+    res = navmesh.navigate_with_costmap(
+        cmap,
+        goal_xy=(args.goal[0], args.goal[1]),
+        start_xy=start_xy,
+        mode=args.mode,
+        max_legs=args.max_legs,
+        arrive_px=args.arrive_px,
+        sprint=not args.no_sprint,
+        spam_f=not args.no_spam_f,
+        cache_dir=args.cache_dir,
+    )
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
@@ -462,6 +606,112 @@ def cmd_explore(args: argparse.Namespace) -> None:
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+def _load_frame_or_capture(args: argparse.Namespace) -> Image.Image:
+    frame = getattr(args, "frame", None)
+    if frame:
+        return Image.open(frame).convert("RGB")
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            return mm.screencap()
+    gw = find_game_window()
+    return capture_client(gw=gw)
+
+
+def cmd_ocr(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    roi = tuple(args.roi) if args.roi else None
+    res = ocr_tpl.ocr_roi(img, roi=roi, min_score=args.min_score)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_read_f(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    res = ocr_tpl.read_interact_prompt(img)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_hud_markers(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    kinds = args.kinds if args.kinds else ("chest", "challenge", "wumi", "egg")
+    res = ocr_tpl.detect_floating_markers(img, kinds=kinds, use_ocr=not args.no_ocr, threshold=args.threshold)
+    print(json.dumps({"ok": True, "count": len(res), "markers": res}, ensure_ascii=False, indent=2))
+
+
+def cmd_map_pois(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    res = ocr_tpl.detect_world_map_pois(img, use_ocr=args.ocr)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_check_anomaly(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    res = ocr_tpl.detect_screen_anomaly(img, use_ocr=not args.no_ocr)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_recover(args: argparse.Namespace) -> None:
+    res = ocr_tpl.recover_anomaly(
+        auto_confirm_repair=args.auto_confirm,
+        dry_run=args.dry_run,
+        frame_path=args.frame,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_yolo_detect(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    det = detector.HybridDetector(model_path=args.model, conf_thres=args.conf)
+    res = det.detect(img, classes=args.classes, use_ocr=args.ocr)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_yolo_bench(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    if args.model and os.path.isfile(args.model):
+        yd = detector.YoloOnnxDetector(model_path=args.model, conf_thres=args.conf)
+        res = yd.benchmark(img, runs=args.runs)
+    else:
+        det = detector.HybridDetector(model_path=args.model, conf_thres=args.conf)
+        rgb = ocr_tpl._to_rgb_1080(img)
+        times = []
+        last_cnt = 0
+        for _ in range(max(1, args.runs)):
+            dets, ms = det.detect_rgb(rgb)
+            times.append(ms)
+            last_cnt = len(dets)
+        res = {
+            "ok": True,
+            "backend": det.backend_name,
+            "model_found": False,
+            "model_path": args.model,
+            "ort_providers": detector.available_providers(),
+            "runs": len(times),
+            "avg_ms": round(sum(times) / len(times), 2),
+            "est_fps": round(1000.0 / max(0.1, sum(times) / len(times)), 1),
+            "last_count": last_cnt,
+        }
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_yolo_init_dataset(args: argparse.Namespace) -> None:
+    res = detector.init_yolo_dataset(
+        out_dir=args.out,
+        snaps_dir=args.snaps,
+        val_ratio=args.val_ratio,
+        max_images=args.max_images,
+        mask_uid=not args.no_mask_uid,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_yolo_prelabel(args: argparse.Namespace) -> None:
+    res = detector.prelabel_yolo_dataset(
+        dataset_dir=args.dataset,
+        min_score=args.min_score,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     env_idx = os.environ.get("AZP_MUMU_INDEX")
     p = argparse.ArgumentParser(prog="azp", description="AzurPromilia (蓝色星原) Open-World Automation CLI (PC & MuMu)")
@@ -571,6 +821,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--settle", type=float, default=2.05)
     s.set_defaults(func=cmd_solve_zuzanka)
 
+    s = sub.add_parser("solve-race", help="Real-time 25Hz BitBlt steering solver for 坐骑挑战 (ONNX YOLO or anti-crystal CV)")
+    s.add_argument("--max-sec", type=float, default=65.0)
+    s.add_argument("--gain", type=float, default=0.28)
+    s.add_argument("--restart", action="store_true", help="Press P to restart race before steering")
+    s.add_argument("--no-sprint", action="store_true")
+    s.add_argument("--model", default=None, help="Optional ONNX YOLO model path (auto-uses models/azp_yolo.onnx if present)")
+    s.set_defaults(func=cmd_solve_race)
+
+    s = sub.add_parser("solve-cabbage", help="Real-time 25Hz BitBlt seed-chasing solver for 变身菜鸡")
+    s.add_argument("--max-sec", type=float, default=45.0)
+    s.add_argument("--gain", type=float, default=0.25)
+    s.add_argument("--model", default=None, help="Optional ONNX YOLO model path")
+    s.set_defaults(func=cmd_solve_cabbage)
+
     s = sub.add_parser("capture", help="Star-Bond capture Kibo (G -> LMB -> wait -> G)")
     s.add_argument("--throws", type=int, default=1)
     s.add_argument("--wait", type=float, default=3.5)
@@ -587,6 +851,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("claim-events", help="Safely claim F1 星临旅记 event rewards")
     s.add_argument("--clicks", type=int, default=2)
     s.set_defaults(func=cmd_claim_events)
+
+    s = sub.add_parser("claim-codex", help="Claim Esc -> 星临图志 -> 调查奖励 star-level Codex rewards")
+    s.add_argument("--clicks", type=int, default=3)
+    s.set_defaults(func=cmd_claim_codex)
+
+    s = sub.add_parser("build-facility", help="Repair or build a nearby Booster Facility (增效设施) via F -> 确认/建造")
+    s.add_argument("--wait", type=float, default=3.0)
+    s.set_defaults(func=cmd_build_facility)
 
     s = sub.add_parser("world-map", help="Switch region map via 世界地图 (charlulu / sprout_valley)")
     s.add_argument("zone", choices=list(actions.WORLD_ZONES.keys()))
@@ -615,6 +887,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("deg", type=float)
     s.add_argument("--sec", type=float, default=2.4)
     s.add_argument("--no-sprint", action="store_true")
+    s.add_argument("--no-spam-f", action="store_true", help="Disable F tapping while walking (e.g., walking away from a modal building)")
     s.set_defaults(func=cmd_goto_bearing)
 
     s = sub.add_parser("bg-snap", help="Capture game screenshot in background via PrintWindow (PC) or MuMu IPC")
@@ -709,6 +982,119 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--snap-dir", default=None)
     s.add_argument("--yaw-bias", type=int, default=0)
     s.set_defaults(func=cmd_explore)
+
+    s = sub.add_parser("nav-bake", help="Bake a 1920x1080 world-map screenshot into a cached 2.5D costmap")
+    s.add_argument("--map", required=True, help="World map screenshot PNG path")
+    s.add_argument("--name", default="sprout_valley", help="Cache map ID")
+    s.add_argument("--cell", type=int, default=6, help="Grid cell size in map pixels (default 6 -> 320x180)")
+    s.add_argument("--px-per-sec", type=float, default=34.0, help="Calibrated sprint speed in map pixels/sec")
+    s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)
+    s.add_argument("--preview", default=None, help="Optional PNG path to save color-coded costmap preview")
+    s.set_defaults(func=cmd_nav_bake)
+
+    s = sub.add_parser("nav-plan", help="Plan an A* path on a baked 2.5D costmap (with obstacle memory)")
+    s.add_argument("--name", default="sprout_valley")
+    s.add_argument("--start", nargs=2, type=float, required=True, metavar=("X", "Y"))
+    s.add_argument("--goal", nargs=2, type=float, required=True, metavar=("X", "Y"))
+    s.add_argument("--mode", choices=["ground", "fly"], default="ground")
+    s.add_argument("--no-smooth", action="store_true")
+    s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)
+    s.add_argument("--preview", default=None, help="Optional PNG path to render path overlay")
+    s.set_defaults(func=cmd_nav_plan)
+
+    s = sub.add_parser("nav-obstacle", help="Manage online obstacle memory & 3D portal edges for a costmap")
+    s.add_argument("op", choices=["list", "add", "portal", "clear"])
+    s.add_argument("--name", default="sprout_valley")
+    s.add_argument("--xy", nargs=2, type=float, default=None, metavar=("X", "Y"))
+    s.add_argument("--dst", nargs=2, type=float, default=None, metavar=("X2", "Y2"))
+    s.add_argument("--radius", type=float, default=24.0)
+    s.add_argument("--penalty", type=float, default=18.0)
+    s.add_argument("--action", default="jump", choices=["jump", "mushroom", "teleport", "fly"])
+    s.add_argument("--cost", type=float, default=4.0)
+    s.add_argument("--reason", default="manual")
+    s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)
+    s.set_defaults(func=cmd_nav_obstacle)
+
+    s = sub.add_parser("nav-localize", help="Localize player (x, y) on a baked world map from minimap terrain")
+    s.add_argument("--name", default="sprout_valley")
+    s.add_argument("--frame", default=None, help="Optional offline screenshot path (captures live window if omitted)")
+    s.add_argument("--hint", nargs=2, type=float, default=None, metavar=("X", "Y"))
+    s.add_argument("--radius", type=float, default=240.0)
+    s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)
+    s.set_defaults(func=cmd_nav_localize)
+
+    s = sub.add_parser("nav-goto", help="Closed-loop 2.5D A* navigation with online obstacle learning & replanning")
+    s.add_argument("--name", default="sprout_valley")
+    s.add_argument("--goal", nargs=2, type=float, required=True, metavar=("X", "Y"))
+    s.add_argument("--start", nargs=2, type=float, default=None, metavar=("X", "Y"))
+    s.add_argument("--mode", choices=["ground", "fly"], default="ground")
+    s.add_argument("--max-legs", type=int, default=12)
+    s.add_argument("--arrive-px", type=float, default=28.0)
+    s.add_argument("--no-sprint", action="store_true")
+    s.add_argument("--no-spam-f", action="store_true")
+    s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)
+    s.set_defaults(func=cmd_nav_goto)
+
+    s = sub.add_parser("ocr", help="Run RapidOCR (ONNX) on live game window or offline screenshot ROI")
+    s.add_argument("--frame", default=None, help="Optional offline screenshot path (captures live window if omitted)")
+    s.add_argument("--roi", nargs=4, type=int, default=None, metavar=("X1", "Y1", "X2", "Y2"))
+    s.add_argument("--min-score", type=float, default=0.48)
+    s.set_defaults(func=cmd_ocr)
+
+    s = sub.add_parser("read-f", help="Read active [F] interaction prompt text and classify category via RapidOCR")
+    s.add_argument("--frame", default=None)
+    s.set_defaults(func=cmd_read_f)
+
+    s = sub.add_parser("hud-markers", help="Detect 3D floating distance icons (chest/challenge/wumi/egg) via templates + OCR")
+    s.add_argument("--frame", default=None)
+    s.add_argument("--kinds", nargs="+", choices=["chest", "challenge", "wumi", "egg"])
+    s.add_argument("--threshold", type=float, default=0.74)
+    s.add_argument("--no-ocr", action="store_true")
+    s.set_defaults(func=cmd_hud_markers)
+
+    s = sub.add_parser("map-pois", help="Extract world-map POIs (Star Veins, locked facilities, shops, bosses) for navmesh")
+    s.add_argument("--frame", default=None)
+    s.add_argument("--ocr", action="store_true", help="Also OCR World Boss labels below red markers")
+    s.set_defaults(func=cmd_map_pois)
+
+    s = sub.add_parser("check-anomaly", help="Detect screen anomalies (revive, tutorial, confirm modal + materials, build panel, tip)")
+    s.add_argument("--frame", default=None)
+    s.add_argument("--no-ocr", action="store_true")
+    s.set_defaults(func=cmd_check_anomaly)
+
+    s = sub.add_parser("recover", help="Automatically recover from revive/tutorial/modal/tip screens back to open-world HUD")
+    s.add_argument("--auto-confirm", action="store_true", help="Confirm repair/build dialogs when materials are sufficient")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--frame", default=None)
+    s.set_defaults(func=cmd_recover)
+
+    s = sub.add_parser("yolo-detect", help="Run optional ONNX YOLO 3D detector (or hybrid CV/template fallback)")
+    s.add_argument("--frame", default=None)
+    s.add_argument("--model", default=detector.DEFAULT_MODEL_PATH)
+    s.add_argument("--classes", nargs="+", choices=list(detector.DEFAULT_CLASSES))
+    s.add_argument("--conf", type=float, default=0.35)
+    s.add_argument("--ocr", action="store_true")
+    s.set_defaults(func=cmd_yolo_detect)
+
+    s = sub.add_parser("yolo-bench", help="Benchmark ONNX YOLO (or hybrid fallback) inference latency and FPS")
+    s.add_argument("--frame", default=None)
+    s.add_argument("--model", default=detector.DEFAULT_MODEL_PATH)
+    s.add_argument("--conf", type=float, default=0.35)
+    s.add_argument("--runs", type=int, default=10)
+    s.set_defaults(func=cmd_yolo_bench)
+
+    s = sub.add_parser("yolo-init-dataset", help="Bootstrap UID-masked Ultralytics YOLO dataset from snaps/")
+    s.add_argument("--out", default=detector.DEFAULT_DATASET_DIR)
+    s.add_argument("--snaps", default=os.path.join(detector.ROOT_DIR, "snaps"))
+    s.add_argument("--val-ratio", type=float, default=0.15)
+    s.add_argument("--max-images", type=int, default=120)
+    s.add_argument("--no-mask-uid", action="store_true")
+    s.set_defaults(func=cmd_yolo_init_dataset)
+
+    s = sub.add_parser("yolo-prelabel", help="Auto-generate initial YOLO .txt labels via templates + CV")
+    s.add_argument("--dataset", default=detector.DEFAULT_DATASET_DIR)
+    s.add_argument("--min-score", type=float, default=0.76)
+    s.set_defaults(func=cmd_yolo_prelabel)
 
     return p
 
