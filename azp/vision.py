@@ -131,7 +131,7 @@ def detect_interact_prompt(img: Image.Image) -> Tuple[bool, float]:
 
 
 def detect_kibo_puzzle_hint(img: Image.Image) -> bool:
-    """Detect when Q glows brightly near a Kibo puzzle (gold/green aura around Q button)."""
+    """Detect when Q glows brightly near a Kibo puzzle (gold/green aura or white [Q] hint badge)."""
     arr = _norm_arr(img)
     # Q skill ring around x=1600..1696, y=942..1038
     q_roi = arr[942:1038, 1600:1696].astype(np.int16)
@@ -139,7 +139,13 @@ def detect_kibo_puzzle_hint(img: Image.Image) -> bool:
     glow = ((q_roi[:, :, 0] > 210) & (q_roi[:, :, 1] > 215) & (q_roi[:, :, 2] > 140)) | (
         (q_roi[:, :, 1] > 220) & (q_roi[:, :, 0] > 160) & (q_roi[:, :, 2] < 160)
     )
-    return float(glow.mean()) > 0.20
+    q_glow = float(glow.mean())
+    if q_glow > 0.165:
+        return True
+    # Also check white [Q] keycap pill in "点击 [Q] 使用奇波技能进行解谜" (y=798..824, x=860..888)
+    qcap = arr[798:824, 860:888]
+    qcap_white = float(((qcap[:, :, 0] > 215) & (qcap[:, :, 1] > 215) & (qcap[:, :, 2] > 215)).mean())
+    return qcap_white > 0.30 and q_glow > 0.14
 
 
 def check_hud_state(img: Image.Image) -> Dict[str, object]:
@@ -158,9 +164,14 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     hp_contrast = float(hp_strip.mean()) - 0.5 * (float(hp_above.mean()) + float(hp_below.mean()))
     hp_bar_valid = (hp_bright > 0.14) and (hp_contrast > 24.0) and (max(above_bright, below_bright) < 0.42)
 
-    # 2. Combat Q-skill slot bottom-right (y=942..1038, x=1600..1696; absent in Home Ranch)
+    # 2. Combat Q-skill slot bottom-right (y=942..1038, x=1600..1696) OR bottom-center G Star-Bond card slot
+    # (y=972..1025, x=1158..1202). Both are absent in Home Ranch; checking G card keeps in_world_hud=True during
+    # flying/mounted flight when the Q combat slot is hidden over smooth sky/water.
     q_slot = arr[942:1038, 1600:1696]
     skill_std = float(q_slot.std())
+    gcard_slot = arr[972:1025, 1158:1202]
+    gcard_std = float(gcard_slot.std())
+    open_world_controls = (skill_std > 28.0) or (gcard_std > 32.0)
 
     # 3. Loading check
     loading = is_loading_screen(img)
@@ -186,14 +197,20 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     # 5. [F] interact pill
     has_interact, interact_ratio = detect_interact_prompt(img)
 
-    in_world_hud = (not loading) and hp_bar_valid and (skill_std > 28.0)
+    in_world_hud = (not loading) and hp_bar_valid and open_world_controls
     confirm_dialog = (not loading) and (not in_world_hud) and is_confirm_dialog(img)
 
     # 6. Kibo puzzle glow on Q (gated on open-world HUD so bright gold icons on menus never false-trigger)
     near_kibo_puzzle = in_world_hud and detect_kibo_puzzle_hint(img)
 
+    # 7. Active flight state: bright white [Ctrl] (降低高度) keycap pill on right-hand HUD (0.347 flying vs 0.000 ground/wolf)
+    ctrl_pill = arr[591:619, 1812:1864]
+    ctrl_white = float(((ctrl_pill[:, :, 0] > 215) & (ctrl_pill[:, :, 1] > 215) & (ctrl_pill[:, :, 2] > 215)).mean())
+    is_flying = in_world_hud and (ctrl_white > 0.18)
+
     return {
         "in_world_hud": in_world_hud,
+        "is_flying": is_flying,
         "loading": loading,
         "confirm_dialog": confirm_dialog,
         "in_combat": in_combat,

@@ -83,7 +83,13 @@ python azp.py read-f                  # OCRs active [F] prompt bar and classifie
 python azp.py yolo-detect             # runs optional models/azp_yolo.onnx (zero PyTorch) or hybrid CV/template fallback
 python azp.py pois                    # minimap player heading (PCA narrow-tip) & clustered uncompleted POI bearings
 ```
-- Prefer `nav-goto` (passing `--start <x> <y>` from your last Star Vein teleport or `nav-localize`; add `--mount` for ~1.75× Wolf speed) for multi-hundred-meter ground routing around lakes, cliffs, and red World Boss danger bubbles; switch to `--mode fly` once regional flying is unlocked.
+- Prefer `nav-goto` (passing `--start <x> <y>` from your last Star Vein teleport or `nav-localize`; add `--mount` for ~1.75× Wolf speed or `--mode fly` once regional flying is unlocked) for multi-hundred-meter routing around lakes, cliffs, and red World Boss danger bubbles.
+- For **3D free flight** (unlocked at Sprout Valley Lv.2+, `T` summons flying mount, `hud.is_flying` detected via right-hand `[Ctrl]` descent pill):
+  - Use `python azp.py fly-bearing <deg> --sec <sec> --climb <sec> [--no-boost] [--land]` and `python azp.py land`.
+  - **CRITICAL FLIGHT RULES**:
+    1. **NEVER press `S` while flying** — holding `S` turns the flying mount 180° and the flight camera auto-follows, silently reversing heading. Always clear cliffs with `W + Space` simultaneous climb (`~730` speed; stationary `Space` alone barely rises).
+    2. **NEVER tap `T` at high altitude** — causes lethal fall damage. Always descend with `Ctrl` until touchdown (`python azp.py land` or `--land`) before dismounting.
+    3. **Stay airborne (`fly-bearing` without `--land`) for aerial recon**, and avoid crossing the golden fog barrier into **`迹影崖谷` (`0%`)** before Star-Sense Lv.20+ story unlock (inflicts lethal `-389 HP/s` corruption mist DoT; revive via `CHALLENGE FAILED / 复苏 (960, 800)`).
 - For short-range sprints (<80m), use `python azp.py goto-bearing <deg> --sec <sec>` (2-pass closed-loop yaw alignment + minimap-diff unstuck recovery; pass `--no-spam-f` when walking away from an interactive modal building).
 - Mount (`T`) uses the last selected mount from `hold T` wheel. Switch explicitly via `python azp.py mount --select wolf` (Slot 2 `(1140, 345)`, `速 800`, fast ground travel) or `python azp.py mount --select bird` (Slot 1 `(960, 290)`, `速 350`, hovers/glides; climbs freely once region flying unlocks). Avoid `--jump` while swimming.
 
@@ -138,4 +144,4 @@ Before concluding or committing:
 
 Load these only when needed:
 - [UI Coordinates, CV Thresholds & Game Mechanics](./references/ui-coordinates-and-mechanics.md) — Calibrated 1920×1080 coordinates, Kibo wheel slots, mount wheel, menu buttons, Home Ranch exit dialog, Zuzanka/Cabbage/Race physics, and background input test matrix.
-- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 62 `azp.py` subcommands (PC, MuMu, 2.5D A* navmesh, RapidOCR/templates, anomaly recovery, Home Ranch harvest, Y-Journal claim, and ONNX YOLO) and module responsibilities.
+- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 64 `azp.py` subcommands (PC, MuMu, 3D flight `fly-bearing`/`land`, 2.5D A* navmesh, RapidOCR/templates, anomaly recovery, Home Ranch harvest, Y-Journal claim, and ONNX YOLO) and module responsibilities.

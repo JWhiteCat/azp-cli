@@ -165,6 +165,17 @@ def map_teleport(map_x: float, map_y: float, open_map_first: bool = True, timeou
     gw = ensure_focus()
     if open_map_first:
         ctl.tap("m", hold=0.06, after=0.85)
+    else:
+        # If a right-hand parchment drawer (标记点 / facility card) is already open,
+        # the first click anywhere on the map only dismisses it instead of selecting the waypoint.
+        import numpy as np
+
+        cur_arr = np.asarray(capture_client(gw=gw).convert("RGB"))
+        drawer = cur_arr[120:320, 1520:1860]
+        spread = np.max(drawer, axis=2).astype(np.int16) - np.min(drawer, axis=2).astype(np.int16)
+        if float(drawer.mean()) > 205.0 and float(spread.mean()) < 22.0:
+            ctl.mouse_click_client(500, 500, gw=gw)
+            time.sleep(0.45)
     click_x, click_y = float(map_x), float(map_y)
     dragged_dy = 0.0
     if click_y >= 885.0:
@@ -173,8 +184,8 @@ def map_teleport(map_x: float, map_y: float, open_map_first: bool = True, timeou
         time.sleep(0.45)
         click_y = 600.0
     ctl.mouse_click_client(click_x, click_y, gw=gw)
-    time.sleep(0.75)
-    ctl.mouse_click_client(1670, 1000, gw=gw)
+    time.sleep(0.8)
+    ctl.mouse_click_client(1665, 975, gw=gw)
     time.sleep(1.5)
     res = wait_for_hud(timeout=timeout)
     return {"ok": res["ok"], "target": [map_x, map_y], "clicked": [click_x, click_y], "dragged_dy": dragged_dy, "wait": res}
@@ -224,6 +235,17 @@ def switch_world_zone(zone: str, open_map_first: bool = True) -> Dict[str, objec
     gw = ensure_focus()
     if open_map_first:
         ctl.tap("m", hold=0.06, after=0.85)
+    else:
+        # If a right-hand parchment drawer (标记点 / facility card) is already open,
+        # the first click anywhere on the map only dismisses it instead of selecting the waypoint.
+        import numpy as np
+
+        cur_arr = np.asarray(capture_client(gw=gw).convert("RGB"))
+        drawer = cur_arr[120:320, 1520:1860]
+        spread = np.max(drawer, axis=2).astype(np.int16) - np.min(drawer, axis=2).astype(np.int16)
+        if float(drawer.mean()) > 205.0 and float(spread.mean()) < 22.0:
+            ctl.mouse_click_client(500, 500, gw=gw)
+            time.sleep(0.45)
     ctl.mouse_click_client(1810, 950, gw=gw)
     time.sleep(0.85)
     zx, zy = WORLD_ZONES[key]
@@ -287,9 +309,11 @@ def home_harvest(return_to_world: bool = True, timeout: float = 25.0) -> Dict[st
     time.sleep(0.6)
     ctl.mouse_click_client(960, 950, gw=gw)
     time.sleep(0.5)
-    # Exit 建筑管理 & 家园中枢
-    ctl.tap("esc", hold=0.06, after=0.6)
-    ctl.tap("esc", hold=0.06, after=0.7)
+    # Exit 建筑管理 & 家园中枢 cleanly without overshooting into the Esc pause menu
+    for _ in range(3):
+        if coop.is_home_ranch(capture_client(gw=gw)):
+            break
+        ctl.tap("esc", hold=0.06, after=0.7)
 
     exit_res = exit_home_ranch(timeout=timeout) if return_to_world else None
     return {

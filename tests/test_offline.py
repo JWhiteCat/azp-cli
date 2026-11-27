@@ -56,6 +56,21 @@ def run_tests() -> None:
     st_modal = vision.check_hud_state(cream_modal)
     assert st_modal["in_world_hud"] is False and st_modal["near_kibo_puzzle"] is False, st_modal
 
+    # 2c. High-altitude flight HUD detection: Q combat slot hidden over smooth sky, G card slot + [Ctrl] descent pill present
+    fly_hud = Image.new("RGB", (1920, 1080), (95, 140, 185))
+    fdr = ImageDraw.Draw(fly_hud)
+    # Dark surround + bright white HP bar (y=996..1006, x=830..1090)
+    fdr.rectangle([820, 970, 1100, 1035], fill=(28, 36, 48))
+    fdr.rectangle([830, 996, 1090, 1006], fill=(240, 244, 248))
+    # High-contrast G Star-Bond card icon (x=1158..1202, y=972..1025)
+    fdr.rectangle([1158, 972, 1202, 1025], fill=(20, 24, 30))
+    fdr.rectangle([1166, 980, 1194, 1016], fill=(235, 240, 245))
+    # Right-hand [Ctrl] white keycap pill for 降低高度 (x=1812..1864, y=591..619)
+    fdr.rectangle([1816, 594, 1860, 616], fill=(242, 245, 248))
+    st_fly = vision.check_hud_state(fly_hud)
+    assert st_fly["in_world_hud"] is True and st_fly["is_flying"] is True, st_fly
+    assert st_world["is_flying"] is False, st_world
+
     # 3. [F] interact pill detection on real mining prompt
     has_f, ratio = vision.detect_interact_prompt(_load("back_world.png"))
     assert has_f is True and ratio > 0.35, (has_f, ratio)

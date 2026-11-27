@@ -308,6 +308,22 @@ def cmd_goto_bearing(args: argparse.Namespace) -> None:
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+def cmd_fly_bearing(args: argparse.Namespace) -> None:
+    res = nav.fly_to_bearing(
+        target_bearing=args.deg,
+        fly_sec=args.sec,
+        climb_sec=args.climb,
+        boost=not args.no_boost,
+        land=args.land,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_land(args: argparse.Namespace) -> None:
+    res = nav.safe_land(max_sec=args.max_sec, dismount=not args.hover)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
 def cmd_nav_bake(args: argparse.Namespace) -> None:
     im = Image.open(args.map)
     cmap = navmesh.CostMap25D.bake_from_image(
@@ -920,6 +936,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-sprint", action="store_true")
     s.add_argument("--no-spam-f", action="store_true", help="Disable F tapping while walking (e.g., walking away from a modal building)")
     s.set_defaults(func=cmd_goto_bearing)
+
+    s = sub.add_parser("fly-bearing", help="3D flight navigation: mount (T), climb (Space), align compass, cruise, and optional safe Ctrl landing")
+    s.add_argument("deg", type=float)
+    s.add_argument("--sec", type=float, default=2.4)
+    s.add_argument("--climb", type=float, default=2.5, help="Initial vertical Space climb duration (sec)")
+    s.add_argument("--no-boost", action="store_true", help="Cruise without Shift speed boost for short precision hops")
+    s.add_argument("--land", action="store_true", help="Safely descend with Ctrl until ground touchdown and dismount (T)")
+    s.set_defaults(func=cmd_fly_bearing)
+
+    s = sub.add_parser("land", help="Safely descend from flight with Ctrl until touchdown and dismount (T) with zero fall damage")
+    s.add_argument("--max-sec", type=float, default=6.5)
+    s.add_argument("--hover", action="store_true", help="Descend to ground without dismounting")
+    s.set_defaults(func=cmd_land)
 
     s = sub.add_parser("bg-snap", help="Capture game screenshot in background via PrintWindow (PC) or MuMu IPC")
     s.add_argument("--out", required=True)

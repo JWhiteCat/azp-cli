@@ -42,7 +42,9 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py exit-home [--timeout 25]` | `actions` | Exit Home Ranch (`星临者的家园`) via `H` → `确认 (1245, 660)` and wait for open-world HUD |
 | `python azp.py home-harvest [--stay] [--timeout 25]` | `actions` | Enter Home Ranch (`H`), one-click harvest `建筑管理 → 一键收取` (`尘石`/矿/木/结晶), and return to open world |
 | `python azp.py interact [--taps 5] [--interval 0.18]` | `actions` | Rapid `F` tapping for chests, teleporters, pickups |
-| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector, 2-pass closed-loop yaw) and sprint forward with minimap-diff unstuck |
+| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector, 2-pass ground / 3-pass flight closed-loop yaw) and sprint forward with minimap-diff unstuck |
+| `python azp.py fly-bearing <deg> [--sec 2.4] [--climb 2.5] [--no-boost] [--land]` | `nav` | 3D flight navigation: auto-summons flying mount (`T`, retries after step-back if blocked by overhang), 3-pass flight yaw alignment (`13.5/12.0 px/deg`), `W+Space` diagonal climb (never presses `S`), cruise + cliff climb unstuck, optional `safe_land()` |
+| `python azp.py land [--max-sec 6.5] [--stay-mounted]` | `nav` | Safe zero-fall-damage landing: pulses `Ctrl` until lower/central viewport stops shifting for 2 consecutive checks, then dismounts with `T` |
 | `python azp.py nav-bake --map <png> --name <id> [--cell 6] [--preview <png>]` | `navmesh` | Bake 1920×1080 world map into cached 2.5D costmap (roads/grass/slope/ruins/water/boss/fog) |
 | `python azp.py nav-plan --name <id> --start X Y --goal X Y [--mode ground\|fly] [--preview <png>]` | `navmesh` | Plan smoothed 8-connected A* path using 2.5D costmap + online obstacle memory (with micro-leg merging) |
 | `python azp.py nav-obstacle <add\|portal\|list\|clear> --name <id> [--xy X Y]` | `navmesh` | Inspect or mutate persisted online obstacle stamps and 3D portal edges (`jump`/`mushroom`/`fly`) |

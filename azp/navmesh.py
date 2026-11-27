@@ -1028,10 +1028,21 @@ def navigate_with_costmap(
             return {"ok": False, "error": "initial_localization_failed", "localization": loc}
         cur_xy = (float(loc["x"]), float(loc["y"]))
 
-    # Wolf mount (~速 800) travels ~1.75x faster than on-foot sprint
-    eff_px_per_sec = cmap.px_per_sec * (1.75 if mount else 1.0)
+    # Calibrated speeds on default 1920x1080 map zoom:
+    # ground sprint (~34 px/s), Wolf mount (~1.75x), flying cruise (~30 px/s steady / ~45 px/s with Shift dash)
+    is_fly_mode = mode == "fly"
+    if is_fly_mode:
+        eff_px_per_sec = max(cmap.px_per_sec * (1.35 if sprint else 0.90), 45.0 if sprint else 30.0)
+    else:
+        eff_px_per_sec = cmap.px_per_sec * (1.75 if mount else 1.0)
     mounted = False
-    if mount:
+    if is_fly_mode:
+        # Mount up now; leg 0 of fly_to_bearing will align heading first and climb via W+Space
+        img_init = capture_client(gw=gw)
+        if not vision.check_hud_state(img_init).get("is_flying"):
+            act_mod.toggle_mount()
+        mounted = True
+    elif mount:
         act_mod.toggle_mount()
         mounted = True
 
@@ -1055,16 +1066,26 @@ def navigate_with_costmap(
             seg = plan["segments"][0]  # type: ignore[index]
             bearing = float(seg["bearing_deg"])
             seg_sec = float(seg["dist_px"]) / max(1.0, eff_px_per_sec)
-            walk_sec = min(6.5, max(0.75, seg_sec))
+            walk_sec = min(4.5 if is_fly_mode else 6.5, max(0.6, seg_sec))
 
-            res = nav_mod.approach_poi(
-                target_bearing=bearing,
-                walk_sec=walk_sec,
-                sprint=sprint,
-                spam_f=spam_f and (not mounted),
-                unstuck=True,
-                abort_fn=abort_fn,
-            )
+            if is_fly_mode:
+                res = nav_mod.fly_to_bearing(
+                    target_bearing=bearing,
+                    fly_sec=walk_sec,
+                    climb_sec=2.6 if leg_idx == 0 else 0.0,
+                    boost=sprint,
+                    land=False,
+                    abort_fn=abort_fn,
+                )
+            else:
+                res = nav_mod.approach_poi(
+                    target_bearing=bearing,
+                    walk_sec=walk_sec,
+                    sprint=sprint,
+                    spam_f=spam_f and (not mounted),
+                    unstuck=True,
+                    abort_fn=abort_fn,
+                )
             if res.get("aborted"):
                 history.append({"leg": leg_idx, "aborted": True, "seg": seg})
                 break
@@ -1131,7 +1152,9 @@ def navigate_with_costmap(
                     pass
                 break
     finally:
-        if mounted:
+        if is_fly_mode and mounted:
+            nav_mod.safe_land(dismount=True, abort_fn=abort_fn)
+        elif mounted:
             act_mod.toggle_mount()
 
     # Check final arrival after completing the last leg

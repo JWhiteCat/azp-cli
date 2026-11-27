@@ -182,16 +182,25 @@ def approach_poi(
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
     img = capture_client(gw=gw)
+    hud0 = vision.check_hud_state(img)
+    flying = bool(hud0.get("is_flying"))
     heading = estimate_player_heading(img)
     turned_dx = 0
     if heading is not None:
-        # 2-pass closed-loop yaw alignment: compensates for foot vs mount camera sensitivity differences
+        # Closed-loop yaw alignment: compensates for foot vs mount vs flight camera sensitivity.
+        # Flying mounts have ~2x lower yaw sensitivity (~13 px/deg) and banking inertia (~0.5s W settle),
+        # so give flight up to 3 passes with calibrated gain to lock onto target_bearing within +-5 deg.
         cur_heading = heading
-        for pass_idx in range(2):
+        max_passes = 3 if flying else 2
+        for pass_idx in range(max_passes):
             delta = (target_bearing - cur_heading + 180.0) % 360.0 - 180.0
-            if abs(delta) <= (5.0 if pass_idx == 0 else 10.0):
+            tol = 6.0 if pass_idx < max_passes - 1 else 10.0
+            if abs(delta) <= tol:
                 break
-            gain = px_per_deg if pass_idx == 0 else 9.5
+            if flying:
+                gain = 13.5 if pass_idx == 0 else 12.0
+            else:
+                gain = px_per_deg if pass_idx == 0 else 9.5
             step_dx = int(round(delta * gain))
             if abs(step_dx) <= 25:
                 break
@@ -199,11 +208,11 @@ def approach_poi(
             actions.turn_camera(step_dx, 0, steps=max(8, abs(step_dx) // 35), step_delay=0.010)
             turned_dx += step_dx
             time.sleep(0.12)
-            if pass_idx == 0:
+            if pass_idx < max_passes - 1:
                 if abort_fn is not None and abort_fn():
                     return {"aborted": True}
-                ctl.hold_keys(["w"], 0.22)
-                time.sleep(0.10)
+                ctl.hold_keys(["w"], 0.50 if flying else 0.22)
+                time.sleep(0.12)
                 h2 = estimate_player_heading(capture_client(gw=gw))
                 if h2 is None:
                     break
@@ -247,4 +256,134 @@ def approach_poi(
         "aborted": not completed,
         "hud_after": vision.check_hud_state(img2),
         "pois_after": detect_minimap_pois(img2),
+    }
+
+
+def safe_land(max_sec: float = 6.5, dismount: bool = True, abort_fn=None) -> Dict[str, object]:
+    """Safely descend with Ctrl until touchdown (viewport stops shifting), then dismount with T (zero fall damage)."""
+    gw = focus_game()
+    img = capture_client(gw=gw)
+    hud = vision.check_hud_state(img)
+    if not hud.get("is_flying"):
+        return {"ok": True, "was_flying": False, "descend_sec": 0.0, "hud": hud}
+
+    t0 = time.time()
+    prev_img = img
+    settled_streak = 0
+    while time.time() - t0 < max_sec:
+        if abort_fn is not None and abort_fn():
+            return {"ok": False, "aborted": True, "descend_sec": round(time.time() - t0, 2)}
+        ctl.hold_keys(["ctrl"], 0.65)
+        cur_img = capture_client(gw=gw)
+        cur_hud = vision.check_hud_state(cur_img)
+        if not cur_hud.get("is_flying"):
+            return {"ok": True, "was_flying": True, "descend_sec": round(time.time() - t0, 2), "hud": cur_hud}
+        # Compare lower/central viewport (excluding wings at top) to detect touchdown stall
+        diff = vision.frame_diff(prev_img, cur_img, roi=(280, 560, 1640, 920))
+        prev_img = cur_img
+        if diff < 3.0:
+            settled_streak += 1
+            if settled_streak >= 2:
+                break
+        else:
+            settled_streak = 0
+
+    if dismount:
+        ctl.tap("t", hold=0.06, after=0.95)
+    final_hud = vision.check_hud_state(capture_client(gw=gw))
+    return {
+        "ok": True,
+        "was_flying": True,
+        "descend_sec": round(time.time() - t0, 2),
+        "dismounted": not final_hud.get("is_flying", False),
+        "hud": final_hud,
+    }
+
+
+def fly_to_bearing(
+    target_bearing: float,
+    fly_sec: float = 2.4,
+    climb_sec: float = 2.5,
+    boost: bool = True,
+    land: bool = False,
+    abort_fn=None,
+) -> Dict[str, object]:
+    """3D flight navigation: auto-summon flying mount (T), climb vertically (Space, never S), align compass, and cruise.
+
+    If blocked by a cliff or canopy (minimap diff < 2.5), climbs vertically with Space instead of sidestepping.
+    Set ``land=True`` to safely descend with Ctrl until ground touchdown and dismount (zero fall damage).
+    """
+    gw = focus_game()
+    img0 = capture_client(gw=gw)
+    hud0 = vision.check_hud_state(img0)
+    took_off = False
+    if not hud0.get("is_flying"):
+        ctl.tap("t", hold=0.06, after=1.05)
+        took_off = True
+        if not vision.check_hud_state(capture_client(gw=gw)).get("is_flying"):
+            # Blocked by rock overhang or tight geometry -> step back briefly and retry takeoff
+            ctl.hold_keys(["s"], 0.65)
+            time.sleep(0.15)
+            ctl.tap("t", hold=0.06, after=1.05)
+
+    # Align compass cleanly first so any forward+up climb heads straight toward target_bearing
+    align_res = approach_poi(
+        target_bearing=target_bearing,
+        walk_sec=0.25,
+        sprint=False,
+        spam_f=False,
+        unstuck=False,
+        abort_fn=abort_fn,
+    )
+    if align_res.get("aborted"):
+        return {"ok": False, "aborted": True, "align": align_res}
+
+    # In Azur Promilia, Space alone rises slowly while W+Space climbs steeply at ~730 speed.
+    # Start with a brief vertical Space lift, then hold W+Space to clear cliffs/canopies along target_bearing.
+    if climb_sec > 0.05:
+        vert_sec = min(1.0, float(climb_sec) * 0.35)
+        fwd_climb_sec = max(0.0, float(climb_sec) - vert_sec)
+        if vert_sec > 0.05:
+            ctl.hold_keys(["space"], vert_sec)
+        if fwd_climb_sec > 0.05:
+            ctl.hold_keys(["w", "space"], fwd_climb_sec)
+        time.sleep(0.08)
+
+    remaining = max(0.0, float(fly_sec))
+    prev_img = capture_client(gw=gw)
+    climbs_unstuck = 0
+    aborted = False
+    while remaining > 0.05:
+        if abort_fn is not None and abort_fn():
+            aborted = True
+            break
+        seg = min(1.8, remaining)
+        keys = ["w", "shift"] if boost else ["w"]
+        ctl.hold_keys(keys, seg)
+        remaining -= seg
+        cur_img = capture_client(gw=gw)
+        cur_hud = vision.check_hud_state(cur_img)
+        if not cur_hud["in_world_hud"]:
+            break
+        mm_diff = vision.frame_diff(prev_img, cur_img, roi=(65, 45, 220, 198))
+        prev_img = cur_img
+        if mm_diff < 2.5 and remaining > 0.25:
+            # Blocked by cliff wall -> lift with Space then climb diagonally with W+Space (never press S!)
+            climbs_unstuck += 1
+            ctl.hold_keys(["space"], 1.4)
+            ctl.hold_keys(["w", "space"], 1.8)
+            prev_img = capture_client(gw=gw)
+
+    land_res = safe_land(dismount=True, abort_fn=abort_fn) if (land and not aborted) else None
+    img_end = capture_client(gw=gw)
+    return {
+        "ok": not aborted,
+        "took_off": took_off,
+        "target_bearing": target_bearing,
+        "heading_before": align_res.get("heading_before"),
+        "turned_dx": align_res.get("turned_dx"),
+        "climbs_unstuck": climbs_unstuck,
+        "landed": land_res,
+        "hud_after": vision.check_hud_state(img_end),
+        "pois_after": detect_minimap_pois(img_end),
     }
