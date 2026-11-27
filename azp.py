@@ -3,14 +3,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 
-from azp import actions, bg_play, coop, gamepad, input_ctl as ctl, minigames, nav, vision
+from azp import actions, bg_play, coop, gamepad, input_ctl as ctl, minigames, mumu, nav, vision
 from azp.win import capture_background, capture_client, check_input_privilege, find_game_window, focus_game, is_focused, user_idle_seconds
 
 
+def _is_mumu(args: argparse.Namespace) -> bool:
+    return getattr(args, "backend", "pc") == "mumu"
+
+
+def _open_mumu(args: argparse.Namespace) -> mumu.MumuExtras:
+    return mumu.open_mumu(
+        mumu_path=getattr(args, "mumu_path", None),
+        index=getattr(args, "mumu_index", None),
+        adb_address=getattr(args, "mumu_addr", None),
+        package_name=getattr(args, "mumu_pkg", mumu.DEFAULT_PACKAGE),
+    )
+
+
 def cmd_status(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        cmd_mumu_status(args)
+        return
     gw = find_game_window()
     img = capture_client(gw=gw)
     hud = vision.check_hud_state(img)
@@ -44,6 +61,9 @@ def cmd_focus(args: argparse.Namespace) -> None:
 
 
 def cmd_snap(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        cmd_mumu_snap(args)
+        return
     gw = find_game_window()
     roi = tuple(args.roi) if args.roi else None
     img = capture_client(gw=gw, roi=roi, scale=args.scale, grid=args.grid, grid_step=args.grid_step, save_path=args.out)
@@ -51,6 +71,11 @@ def cmd_snap(args: argparse.Namespace) -> None:
 
 
 def cmd_key(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.press_key(args.key, hold=args.hold, repeat=args.repeat, interval=args.interval)
+            print(json.dumps({"ok": ok, "backend": "mumu", "touch_enhanced": mm.input_available, "key": args.key, "repeat": args.repeat}))
+        return
     focus_game()
     for i in range(args.repeat):
         ctl.tap(args.key, hold=args.hold, after=args.interval if i + 1 < args.repeat else 0.05)
@@ -58,6 +83,11 @@ def cmd_key(args: argparse.Namespace) -> None:
 
 
 def cmd_click(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.tap(args.x, args.y, hold=args.hold, repeat=args.clicks)
+            print(json.dumps({"ok": ok, "backend": "mumu", "touch_enhanced": mm.input_available, "x": args.x, "y": args.y, "clicks": args.clicks}))
+        return
     gw = focus_game()
     ctl.mouse_click_client(
         args.x,
@@ -72,6 +102,11 @@ def cmd_click(args: argparse.Namespace) -> None:
 
 
 def cmd_drag(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.swipe(args.x1, args.y1, args.x2, args.y2, duration=args.duration, steps=args.steps)
+            print(json.dumps({"ok": ok, "backend": "mumu", "touch_enhanced": mm.input_available, "from": [args.x1, args.y1], "to": [args.x2, args.y2]}))
+        return
     gw = focus_game()
     ctl.mouse_drag_client(args.x1, args.y1, args.x2, args.y2, duration=args.duration, steps=args.steps, button=args.button, gw=gw)
     print(json.dumps({"ok": True, "from": [args.x1, args.y1], "to": [args.x2, args.y2]}))
@@ -85,11 +120,21 @@ def cmd_scroll(args: argparse.Namespace) -> None:
 
 
 def cmd_move(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.joystick_walk(direction=args.dir, duration=args.sec, sprint=args.sprint, jump=args.jump, spam_f=args.spam_f)
+            print(json.dumps({"ok": ok, "backend": "mumu", "dir": args.dir, "sec": args.sec, "sprint": args.sprint, "spam_f": args.spam_f}))
+        return
     actions.walk(direction=args.dir, duration=args.sec, sprint=args.sprint, jump=args.jump, spam_f=args.spam_f)
     print(json.dumps({"ok": True, "dir": args.dir, "sec": args.sec, "sprint": args.sprint, "spam_f": args.spam_f}))
 
 
 def cmd_turn(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.turn_camera(args.dx, args.dy, steps=args.steps)
+            print(json.dumps({"ok": ok, "backend": "mumu", "dx": args.dx, "dy": args.dy}))
+        return
     actions.turn_camera(args.dx, args.dy, steps=args.steps)
     print(json.dumps({"ok": True, "dx": args.dx, "dy": args.dy}))
 
@@ -109,6 +154,11 @@ def cmd_mount(args: argparse.Namespace) -> None:
 
 
 def cmd_dismiss(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.tap(960, 920, repeat=args.clicks, interval=args.interval)
+            print(json.dumps({"ok": ok, "backend": "mumu", "clicks": args.clicks}, ensure_ascii=False))
+        return
     print(json.dumps(actions.dismiss_reward(clicks=args.clicks, interval=args.interval), ensure_ascii=False))
 
 
@@ -172,11 +222,16 @@ def cmd_mask_uid(args: argparse.Namespace) -> None:
 
 
 def cmd_pois(args: argparse.Namespace) -> None:
-    gw = find_game_window()
-    img = capture_client(gw=gw)
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            img = mm.screencap()
+    else:
+        gw = find_game_window()
+        img = capture_client(gw=gw)
     print(
         json.dumps(
             {
+                "backend": "mumu" if _is_mumu(args) else "pc",
                 "heading_deg": nav.estimate_player_heading(img),
                 "hud": vision.check_hud_state(img),
                 "pois": nav.detect_minimap_pois(img),
@@ -199,9 +254,160 @@ def cmd_goto_bearing(args: argparse.Namespace) -> None:
 
 
 def cmd_bg_snap(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            t0 = time.perf_counter()
+            img = mm.screencap(scale=args.scale, save_path=args.out)
+            ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            print(json.dumps({"backend": "mumu", "saved": args.out, "size": list(img.size), "display_id": mm.get_display_id(), "capture_ms": ms}))
+        return
     gw = find_game_window()
     img = capture_background(gw=gw, scale=args.scale, save_path=args.out)
     print(json.dumps({"saved": args.out, "size": list(img.size), "focused": is_focused(gw), "idle_sec": user_idle_seconds()}))
+
+
+def cmd_mumu_list(args: argparse.Namespace) -> None:
+    root = mumu.discover_mumu_root(args.mumu_path)
+    ver = mumu.query_mumu_version(root)
+    dll = mumu.get_mumu_ipc_dll_path(root)
+    insts = mumu.list_mumu_instances(root)
+    print(
+        json.dumps(
+            {
+                "mumu_root": root,
+                "version": ver,
+                "input_version_ok": bool(ver and mumu.is_input_version_supported(ver)),
+                "dll_path": dll,
+                "instances": insts,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_mumu_status(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        info = mm.info()
+        img = mm.screencap()
+        info["hud"] = vision.check_hud_state(img)
+        info["in_home_ranch"] = coop.is_home_ranch(img)
+        info["minimap"] = vision.analyze_minimap(img)
+        info["red_dots"] = vision.detect_red_dots(img)
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+def cmd_mumu_snap(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        roi = tuple(args.roi) if getattr(args, "roi", None) else None
+        t0 = time.perf_counter()
+        img = mm.screencap(
+            roi=roi,
+            scale=args.scale,
+            grid=getattr(args, "grid", False),
+            grid_step=getattr(args, "grid_step", 160),
+            save_path=args.out,
+        )
+        ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        print(
+            json.dumps(
+                {
+                    "backend": "mumu",
+                    "saved": args.out,
+                    "size": list(img.size),
+                    "display_id": mm.get_display_id(),
+                    "target_display_matched": mm.has_target_display,
+                    "capture_ms": ms,
+                    "hud": vision.check_hud_state(img) if roi is None and args.scale == 1.0 else None,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def cmd_mumu_tap(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        ok = mm.tap(args.x, args.y, hold=args.hold, repeat=args.repeat, interval=args.interval, contact=args.contact)
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "backend": "mumu",
+                    "touch_enhanced": mm.input_available,
+                    "display_id": mm.get_display_id(),
+                    "x": args.x,
+                    "y": args.y,
+                    "contact": args.contact,
+                    "repeat": args.repeat,
+                }
+            )
+        )
+
+
+def cmd_mumu_swipe(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        ok = mm.swipe(
+            args.x1,
+            args.y1,
+            args.x2,
+            args.y2,
+            duration=args.duration,
+            steps=args.steps,
+            contact=args.contact,
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "backend": "mumu",
+                    "touch_enhanced": mm.input_available,
+                    "from": [args.x1, args.y1],
+                    "to": [args.x2, args.y2],
+                    "duration": args.duration,
+                    "contact": args.contact,
+                }
+            )
+        )
+
+
+def cmd_mumu_key(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        ok = mm.press_key(args.key, hold=args.hold, repeat=args.repeat, interval=args.interval)
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "backend": "mumu",
+                    "touch_enhanced": mm.input_available,
+                    "key": args.key,
+                    "linux_code": mumu.resolve_linux_keycode(args.key),
+                    "repeat": args.repeat,
+                }
+            )
+        )
+
+
+def cmd_mumu_text(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        ok = mm.input_text(args.text)
+        print(json.dumps({"ok": ok, "backend": "mumu", "touch_enhanced": mm.input_available, "length": len(args.text)}))
+
+
+def cmd_mumu_test(args: argparse.Namespace) -> None:
+    with _open_mumu(args) as mm:
+        latencies = []
+        for _ in range(args.frames):
+            t0 = time.perf_counter()
+            im = mm.screencap()
+            latencies.append(round((time.perf_counter() - t0) * 1000.0, 2))
+        info = mm.info()
+        info["benchmark_frames"] = args.frames
+        info["capture_latencies_ms"] = latencies
+        info["avg_capture_ms"] = round(sum(latencies) / max(1, len(latencies)), 2)
+        if args.out:
+            im.save(args.out)
+            info["saved"] = args.out
+        print(json.dumps(info, ensure_ascii=False, indent=2))
 
 
 def cmd_bg_test(args: argparse.Namespace) -> None:
@@ -257,7 +463,13 @@ def cmd_explore(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="azp", description="AzurPromilia (蓝色星原) Open-World Automation CLI")
+    env_idx = os.environ.get("AZP_MUMU_INDEX")
+    p = argparse.ArgumentParser(prog="azp", description="AzurPromilia (蓝色星原) Open-World Automation CLI (PC & MuMu)")
+    p.add_argument("--backend", choices=["pc", "mumu"], default=os.environ.get("AZP_BACKEND", "pc"), help="Execution backend: pc (Windows client) or mumu (MuMu IPC)")
+    p.add_argument("--mumu-path", default=os.environ.get("AZP_MUMU_PATH"), help="MuMu installation root (auto-detected if omitted)")
+    p.add_argument("--mumu-index", type=int, default=int(env_idx) if env_idx and env_idx.isdigit() else None, help="MuMu instance index (auto-detects com.manjuu.promilia if omitted)")
+    p.add_argument("--mumu-addr", default=os.environ.get("AZP_MUMU_ADDR"), help="Optional MuMu ADB address (e.g. 127.0.0.1:16384 or emulator-5554)")
+    p.add_argument("--mumu-pkg", default=os.environ.get("AZP_MUMU_PKG", mumu.DEFAULT_PACKAGE), help="Target Android package for MuMu display binding")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("status", help="Inspect game window, focus, HUD state, and minimap")
@@ -405,10 +617,59 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-sprint", action="store_true")
     s.set_defaults(func=cmd_goto_bearing)
 
-    s = sub.add_parser("bg-snap", help="Capture game screenshot in background via PrintWindow (no focus hijack)")
+    s = sub.add_parser("bg-snap", help="Capture game screenshot in background via PrintWindow (PC) or MuMu IPC")
     s.add_argument("--out", required=True)
     s.add_argument("--scale", type=float, default=0.75)
     s.set_defaults(func=cmd_bg_snap)
+
+    s = sub.add_parser("mumu-list", help="List MuMu emulator instances, version, and IPC DLL path")
+    s.set_defaults(func=cmd_mumu_list)
+
+    s = sub.add_parser("mumu-status", help="Inspect MuMu IPC screencap/touch enhancements, display_id, and HUD state")
+    s.set_defaults(func=cmd_mumu_status)
+
+    s = sub.add_parser("mumu-snap", help="Zero-focus-hijack MuMu IPC enhanced screenshot (nemu_capture_display)")
+    s.add_argument("--out", required=True, help="Output PNG path")
+    s.add_argument("--roi", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"))
+    s.add_argument("--scale", type=float, default=1.0)
+    s.add_argument("--grid", action="store_true")
+    s.add_argument("--grid-step", type=int, default=160)
+    s.set_defaults(func=cmd_mumu_snap)
+
+    s = sub.add_parser("mumu-tap", help="Zero-focus-hijack MuMu IPC enhanced touch tap")
+    s.add_argument("x", type=float)
+    s.add_argument("y", type=float)
+    s.add_argument("--hold", type=float, default=mumu.TOUCH_HOLD_SEC)
+    s.add_argument("--repeat", type=int, default=1)
+    s.add_argument("--interval", type=float, default=0.08)
+    s.add_argument("--contact", type=int, default=0, help="0-based finger slot (mapped to MuMu 1-based finger_id)")
+    s.set_defaults(func=cmd_mumu_tap)
+
+    s = sub.add_parser("mumu-swipe", help="Zero-focus-hijack MuMu IPC enhanced smooth swipe")
+    s.add_argument("x1", type=float)
+    s.add_argument("y1", type=float)
+    s.add_argument("x2", type=float)
+    s.add_argument("y2", type=float)
+    s.add_argument("--duration", type=float, default=0.30)
+    s.add_argument("--steps", type=int, default=None)
+    s.add_argument("--contact", type=int, default=0)
+    s.set_defaults(func=cmd_mumu_swipe)
+
+    s = sub.add_parser("mumu-key", help="Zero-focus-hijack MuMu IPC enhanced Linux key press")
+    s.add_argument("key", help="Key name (e.g. esc, back, space, w) or Android KeyEvent code")
+    s.add_argument("--hold", type=float, default=0.05)
+    s.add_argument("--repeat", type=int, default=1)
+    s.add_argument("--interval", type=float, default=0.10)
+    s.set_defaults(func=cmd_mumu_key)
+
+    s = sub.add_parser("mumu-text", help="Zero-focus-hijack MuMu IPC text input (nemu_input_text)")
+    s.add_argument("text")
+    s.set_defaults(func=cmd_mumu_text)
+
+    s = sub.add_parser("mumu-test", help="Benchmark MuMu IPC 截图增强 and verify 触控增强 capabilities")
+    s.add_argument("--frames", type=int, default=5)
+    s.add_argument("--out", default=None)
+    s.set_defaults(func=cmd_mumu_test)
 
     s = sub.add_parser("bg-test", help="Test whether ViGEmBus virtual Xbox controller moves camera while unfocused")
     s.set_defaults(func=cmd_bg_test)
@@ -453,6 +714,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)

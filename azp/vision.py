@@ -54,12 +54,16 @@ def is_loading_screen(img: Image.Image) -> bool:
     std_v = float(arr.std())
     if (mean_v < 18.0 and std_v < 25.0) or (mean_v > 235.0 and std_v < 25.0):
         return True
-    # AzurPromilia loading screen has a uniform dark-navy (blue-dominant) banner at y=810..1075
+    # AzurPromilia loading screen has either:
+    # 1) Dark-navy (blue-dominant) night tip banner, OR
+    # 2) Bright warm-cream daytime tip banner at y=810..1075
     bot = arr[820:1070, 80:1840]
     bot_rgb = bot.mean(axis=(0, 1))
     bot_mean = float(bot_rgb.mean())
     bot_std = float(bot.std())
-    return bot_mean < 42.0 and bot_std < 22.0 and float(bot_rgb[2]) >= float(bot_rgb[1])
+    dark_navy = bot_mean < 42.0 and bot_std < 22.0 and float(bot_rgb[2]) >= float(bot_rgb[1])
+    day_cream = bot_mean > 220.0 and bot_std < 22.0
+    return dark_navy or day_cream
 
 
 def is_confirm_dialog(img: Image.Image) -> bool:

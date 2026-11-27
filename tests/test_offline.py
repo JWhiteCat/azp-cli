@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from azp import coop, nav, vision
+from azp import coop, mumu, nav, vision
 
 SNAPS = os.path.join(ROOT, "snaps")
 
@@ -39,10 +39,13 @@ def run_tests() -> None:
     assert st_world["loading"] is False, st_world
     assert st_world["in_combat"] is False, st_world
 
-    # 2. Loading screen detection on AzurPromilia dark-navy bottom banner
+    # 2. Loading screen detection on AzurPromilia dark-navy night & warm-cream daytime banners
     st_load = vision.check_hud_state(_load("xinya_arrived.png"))
     assert st_load["loading"] is True, st_load
     assert st_load["in_world_hud"] is False, st_load
+    day_load = Image.new("RGB", (1920, 1080), (60, 120, 80))
+    day_load.paste(Image.new("RGB", (1920, 300), (235, 232, 224)), (0, 780))
+    assert vision.is_loading_screen(day_load) is True
 
     # 3. [F] interact pill detection on real mining prompt
     has_f, ratio = vision.detect_interact_prompt(_load("back_world.png"))
@@ -92,6 +95,24 @@ def run_tests() -> None:
     dummy = Image.new("RGB", (1920, 1080), (240, 240, 240))
     res_mask = vision.mask_uid_image(dummy)
     assert res_mask["uid_box"] == [107, 1037, 363, 1080], res_mask
+
+    # 8. MuMu index parsing, input version gate (>= 6.3.2.0), and keycode mapping (matching MAA)
+    assert mumu.parse_mumu_index("emulator-5554") == 0
+    assert mumu.parse_mumu_index("emulator-5556") == 1
+    assert mumu.parse_mumu_index("127.0.0.1:16384") == 0
+    assert mumu.parse_mumu_index("127.0.0.1:16416") == 1
+    assert mumu.parse_mumu_index("127.0.0.1:16388") == 32  # >= 32 bit-swizzle
+    assert mumu.parse_mumu_index("127.0.0.1:7555") == 0
+    assert mumu.parse_mumu_index("127.0.0.1:5555") == 0
+    assert mumu.is_input_version_supported("6.3.1.9") is False
+    assert mumu.is_input_version_supported("6.3.2.0") is True
+    assert mumu.is_input_version_supported("6.8.8.0") is True
+    assert mumu.is_input_version_supported("6.4") is True
+    assert mumu.resolve_linux_keycode("esc") == 1
+    assert mumu.resolve_linux_keycode("w") == 17
+    assert mumu.resolve_linux_keycode("space") == 57
+    assert mumu.resolve_linux_keycode("back") == 158
+    assert mumu.resolve_linux_keycode(111) == 1
 
     print("ALL_OFFLINE_TESTS_PASSED", {"heading": heading, "poi0": pois[0], "f_ratio": ratio})
 

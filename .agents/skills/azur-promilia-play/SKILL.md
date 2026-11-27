@@ -38,6 +38,10 @@ Always follow these four hard platform rules before sending any input:
    - Whenever pausing, asking the user, or finishing a run, always call `windows-mcp` `ControlStatus(release=true)`.
 4. **Exit Home Ranch before open-world runs**:
    - If `azp.py status` reports `in_home_ranch: true` (or `hud.confirm_dialog: true` for `是否要离开家园？`), run `python azp.py exit-home` (or let `coop-explore` auto-exit Home Ranch; pass `--no-exit-home` to opt out).
+5. **MuMu Emulator Backend (Zero-Focus-Hijack IPC 截图增强 & 触控增强)**:
+   - When targeting MuMu Player 12 / NX (`com.manjuu.promilia`), use `azp.py mumu-*` commands or pass `--backend mumu` (optionally `--mumu-index <n>`, `--mumu-addr <host:port|emulator-xxxx>`, or `--mumu-path <dir>`).
+   - `azp/mumu.py` automatically discovers the MuMu install root, enumerates instances via `MuMuManager.exe info -v all`, binds `nemu_get_display_id` to `com.manjuu.promilia` (avoiding other emulator instances like Arknights), checks `MuMuManager.exe version >= 6.3.2.0` before enabling IPC touch/key input (`nemu_input_event_finger_touch_down/up`, `nemu_input_event_key_down/up`, `nemu_input_text`), and captures 1920×1080 background RGBA frames via `nemu_capture_display` (~14ms/frame) with zero foreground focus hijack.
+   - **Anti-cheat note**: On Android MuMu, `com.manjuu.promilia` may display a Tencent ACE emulator warning (`ACE安全风险提示：检测到您运行在模拟器内...`) upon entering the game world. Never attempt to bypass ACE; report it clearly to the user if encountered.
 
 ## 2. Core Open-World Exploration & Reward Workflow
 
@@ -110,4 +114,4 @@ Before concluding or committing:
 
 Load these only when needed:
 - [UI Coordinates, CV Thresholds & Game Mechanics](./references/ui-coordinates-and-mechanics.md) — Calibrated 1920×1080 coordinates, Kibo wheel slots, menu buttons, Home Ranch exit dialog, Zuzanka physics, and background input test matrix.
-- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 33 `azp.py` subcommands and module responsibilities.
+- [AZP CLI Command Reference](./references/cli-reference.md) — Complete catalog of all 41 `azp.py` subcommands (PC & MuMu) and module responsibilities.

@@ -1,6 +1,19 @@
 # AZP CLI Command Reference (`azp.py`)
 
-Run all live-window commands inside `windows-mcp` `PowerShell` from the AZP project root (pass `timeout: 120` for multi-step loops):
+Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from the AZP project root (pass `timeout: 120` for multi-step loops). Global backend options: `--backend pc|mumu`, `--mumu-path <dir>`, `--mumu-index <n>`, `--mumu-addr <addr>`, `--mumu-pkg <pkg>` (or env `AZP_BACKEND`, `AZP_MUMU_PATH`, `AZP_MUMU_INDEX`, `AZP_MUMU_ADDR`, `AZP_MUMU_PKG`).
+
+## MuMu Emulator Backend (Zero-Focus-Hijack 截图增强 & 触控增强)
+| Command | Module | Purpose |
+| --- | --- | --- |
+| `python azp.py mumu-list` | `mumu` | Discover MuMu root, version (`>= 6.3.2.0` input gate), IPC DLL path, and all instances (`MuMuManager info -v all`) |
+| `python azp.py mumu-status` | `mumu`, `vision` | Inspect MuMu IPC capture/touch enhancements, `display_id`, latency, HUD, Home Ranch, and minimap |
+| `python azp.py mumu-test [--frames 5] [--out <path>]` | `mumu` | Benchmark MuMu IPC `nemu_capture_display` latency and verify multi-touch/key/text enhancement support |
+| `python azp.py mumu-snap --out <path> [--grid] [--roi ...] [--scale 1.0]` | `mumu` | Pure-background MuMu IPC screenshot (~14ms, works covered/minimized) |
+| `python azp.py mumu-tap <x> <y> [--hold 0.035] [--repeat 1] [--contact 0]` | `mumu` | Pure-background MuMu IPC multi-finger touch tap (`contact` 0-based → `finger_id` 1-based) |
+| `python azp.py mumu-swipe <x1> <y1> <x2> <y2> [--duration 0.30] [--contact 0]` | `mumu` | Pure-background MuMu IPC smoothstep-interpolated swipe (always lifts finger in `finally`) |
+| `python azp.py mumu-key <key> [--hold 0.05] [--repeat 1]` | `mumu` | Pure-background MuMu IPC Linux key press (`esc/back/space/w/...` or Android KeyEvent code) |
+| `python azp.py mumu-text <text>` | `mumu` | Pure-background MuMu IPC text input (`nemu_input_text`) |
+| `python azp.py --backend mumu <status\|snap\|bg-snap\|click\|drag\|key\|move\|turn\|dismiss\|pois>` | `mumu` | Route standard AZP subcommands transparently through MuMu IPC |
 
 ## Inspection & Reconnaissance
 | Command | Module | Purpose |
