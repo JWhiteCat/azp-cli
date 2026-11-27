@@ -152,7 +152,10 @@ def cmd_kibo_puzzle(args: argparse.Namespace) -> None:
 
 
 def cmd_mount(args: argparse.Namespace) -> None:
-    print(json.dumps(actions.toggle_mount(), ensure_ascii=False))
+    if args.select:
+        print(json.dumps(actions.select_mount(args.select), ensure_ascii=False))
+    else:
+        print(json.dumps(actions.toggle_mount(), ensure_ascii=False))
 
 
 def cmd_dismiss(args: argparse.Namespace) -> None:
@@ -230,6 +233,16 @@ def cmd_claim_codex(args: argparse.Namespace) -> None:
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+def cmd_claim_journal(args: argparse.Namespace) -> None:
+    tabs = tuple(args.tabs) if args.tabs else ("home", "adventure", "companion", "trial")
+    res = actions.claim_journal_rewards(
+        tabs=tabs,
+        clicks_per_tab=args.clicks,
+        claim_milestones=not args.no_milestones,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
 def cmd_build_facility(args: argparse.Namespace) -> None:
     res = actions.build_booster_facility(wait_after=args.wait)
     print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -242,6 +255,11 @@ def cmd_world_map(args: argparse.Namespace) -> None:
 
 def cmd_exit_home(args: argparse.Namespace) -> None:
     res = actions.exit_home_ranch(timeout=args.timeout)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+def cmd_home_harvest(args: argparse.Namespace) -> None:
+    res = actions.home_harvest(return_to_world=not args.stay, timeout=args.timeout)
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
@@ -392,6 +410,7 @@ def cmd_nav_goto(args: argparse.Namespace) -> None:
         arrive_px=args.arrive_px,
         sprint=not args.no_sprint,
         spam_f=not args.no_spam_f,
+        mount=args.mount,
         cache_dir=args.cache_dir,
     )
     print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -791,7 +810,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--wait", type=float, default=2.8)
     s.set_defaults(func=cmd_kibo_puzzle)
 
-    s = sub.add_parser("mount", help="Toggle Kibo mount (T)")
+    s = sub.add_parser("mount", help="Toggle Kibo mount (T) or select a specific mount from hold-T wheel")
+    s.add_argument("--select", choices=list(actions.MOUNT_WHEEL_SLOTS.keys()), default=None, help="Select specific mount (bird/wolf) via hold-T wheel")
     s.set_defaults(func=cmd_mount)
 
     s = sub.add_parser("dismiss", help="Dismiss reward popups")
@@ -856,8 +876,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--clicks", type=int, default=3)
     s.set_defaults(func=cmd_claim_codex)
 
+    s = sub.add_parser("claim-journal", help="Open Y (星之旅录), claim completed tasks across tabs & unlocked milestone orbs")
+    s.add_argument("--tabs", nargs="+", choices=list(actions.JOURNAL_TABS.keys()), default=None)
+    s.add_argument("--clicks", type=int, default=2)
+    s.add_argument("--no-milestones", action="store_true")
+    s.set_defaults(func=cmd_claim_journal)
+
     s = sub.add_parser("build-facility", help="Repair or build a nearby Booster Facility (增效设施) via F -> 确认/建造")
-    s.add_argument("--wait", type=float, default=3.0)
+    s.add_argument("--wait", type=float, default=4.2)
     s.set_defaults(func=cmd_build_facility)
 
     s = sub.add_parser("world-map", help="Switch region map via 世界地图 (charlulu / sprout_valley)")
@@ -866,8 +892,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_world_map)
 
     s = sub.add_parser("exit-home", help="Exit Home Ranch (星临者的家园) via H -> 确认 and wait for open-world HUD")
-    s.add_argument("--timeout", type=float, default=18.0)
+    s.add_argument("--timeout", type=float, default=25.0)
     s.set_defaults(func=cmd_exit_home)
+
+    s = sub.add_parser("home-harvest", help="Enter Home Ranch (H), one-click harvest all production buildings (尘石/矿/木/结晶), and return")
+    s.add_argument("--stay", action="store_true", help="Stay inside Home Ranch instead of returning to open world")
+    s.add_argument("--timeout", type=float, default=25.0)
+    s.set_defaults(func=cmd_home_harvest)
 
     s = sub.add_parser("mask-uid", help="Mask bottom-left UID region on screenshots with opaque solid box before git commit")
     s.add_argument("paths", nargs="+", help="One or more PNG/JPG screenshot paths")
@@ -1030,6 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mode", choices=["ground", "fly"], default="ground")
     s.add_argument("--max-legs", type=int, default=12)
     s.add_argument("--arrive-px", type=float, default=28.0)
+    s.add_argument("--mount", action="store_true", help="Summon fast ground mount (~1.75x speed) during nav-goto and dismount on arrival")
     s.add_argument("--no-sprint", action="store_true")
     s.add_argument("--no-spam-f", action="store_true")
     s.add_argument("--cache-dir", default=navmesh.DEFAULT_CACHE_DIR)

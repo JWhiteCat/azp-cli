@@ -228,7 +228,7 @@ def _classify_interact_text(text: str) -> str:
         return "facility"
     if any(k in t for k in ("星脉", "节点", "激活", "锚点")):
         return "star_vein"
-    if any(k in t for k in ("挑战", "开启", "试炼", "祖赞卡", "菜鸡", "竞赛")):
+    if any(k in t for k in ("挑战", "开启", "试炼", "祖赞卡", "菜鸡", "竞赛", "变身")):
         return "challenge"
     if any(k in t for k in ("乌咪", "星律", "调查", "奇波蛋")):
         return "collectible"
@@ -283,11 +283,12 @@ def detect_floating_markers(
 ) -> List[Dict[str, object]]:
     """Detect 3D floating HUD markers (chest/challenge/wumi/egg) and optionally OCR their distance (m)."""
     arr = _to_rgb_1080(img)
+    th_base = float(threshold)
     tpl_map = {
-        "chest": ("hud_chest", max(0.78, threshold)),
-        "challenge": ("hud_challenge", max(0.78, threshold)),
-        "wumi": ("hud_wumi", max(0.78, threshold)),
-        "egg": ("hud_egg", max(0.79, threshold)),
+        "chest": ("hud_chest", max(0.76, th_base)),
+        "challenge": ("hud_challenge", th_base),
+        "wumi": ("hud_wumi", th_base),
+        "egg": ("hud_egg", min(0.82, th_base + 0.03)),
     }
     # Exclude minimap (top-left), top HUD bar, right party list, bottom skill bar
     vp_roi = (120, 120, 1740, 910)
@@ -302,7 +303,7 @@ def detect_floating_markers(
                 tpl_name,
                 roi=vp_roi,
                 threshold=th,
-                scales=(0.95, 1.0, 1.05),
+                scales=(0.90, 0.96, 1.0, 1.05),
                 nms_dist=36.0,
                 max_results=8,
                 templates_dir=templates_dir,

@@ -146,9 +146,17 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     """Comprehensive HUD & state detection calibrated for 1920x1080 AzurPromilia."""
     arr = _norm_arr(img)
 
-    # 1. Bottom-center HP bar (calibrated: y=998..1003, x=830..1090)
+    # 1. Bottom-center HP bar (calibrated: y=996..1006, x=830..1090)
+    # Require vertical contrast against bands above/below so bright cream modals (Y 星之旅录 / 山谷秘藏 / 建筑管理)
+    # never falsely pass as an open-world HP bar.
     hp_strip = arr[996:1006, 830:1090]
+    hp_above = arr[972:988, 830:1090]
+    hp_below = arr[1014:1030, 830:1090]
     hp_bright = float(((hp_strip[:, :, 0] > 180) & (hp_strip[:, :, 1] > 180) & (hp_strip[:, :, 2] > 180)).mean())
+    above_bright = float(((hp_above[:, :, 0] > 180) & (hp_above[:, :, 1] > 180) & (hp_above[:, :, 2] > 180)).mean())
+    below_bright = float(((hp_below[:, :, 0] > 180) & (hp_below[:, :, 1] > 180) & (hp_below[:, :, 2] > 180)).mean())
+    hp_contrast = float(hp_strip.mean()) - 0.5 * (float(hp_above.mean()) + float(hp_below.mean()))
+    hp_bar_valid = (hp_bright > 0.14) and (hp_contrast > 24.0) and (max(above_bright, below_bright) < 0.42)
 
     # 2. Combat Q-skill slot bottom-right (y=942..1038, x=1600..1696; absent in Home Ranch)
     q_slot = arr[942:1038, 1600:1696]
@@ -178,11 +186,11 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     # 5. [F] interact pill
     has_interact, interact_ratio = detect_interact_prompt(img)
 
-    # 6. Kibo puzzle glow on Q
-    near_kibo_puzzle = detect_kibo_puzzle_hint(img)
-
-    in_world_hud = (not loading) and (hp_bright > 0.14) and (skill_std > 28.0)
+    in_world_hud = (not loading) and hp_bar_valid and (skill_std > 28.0)
     confirm_dialog = (not loading) and (not in_world_hud) and is_confirm_dialog(img)
+
+    # 6. Kibo puzzle glow on Q (gated on open-world HUD so bright gold icons on menus never false-trigger)
+    near_kibo_puzzle = in_world_hud and detect_kibo_puzzle_hint(img)
 
     return {
         "in_world_hud": in_world_hud,

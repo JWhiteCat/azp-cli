@@ -48,6 +48,14 @@ def run_tests() -> None:
     day_load.paste(Image.new("RGB", (1920, 300), (235, 232, 224)), (0, 780))
     assert vision.is_loading_screen(day_load) is True
 
+    # 2b. Cream/white full-screen modal (e.g. Y 星之旅录 / 山谷秘藏) must NOT falsely trigger in_world_hud or near_kibo_puzzle
+    cream_modal = Image.new("RGB", (1920, 1080), (228, 224, 212))
+    mdr = ImageDraw.Draw(cream_modal)
+    # Paint golden milestone badge over bottom-right Q-slot area to verify Q-glow is gated on real open-world HUD
+    mdr.ellipse([1605, 945, 1690, 1030], fill=(245, 220, 145), outline=(60, 50, 40), width=4)
+    st_modal = vision.check_hud_state(cream_modal)
+    assert st_modal["in_world_hud"] is False and st_modal["near_kibo_puzzle"] is False, st_modal
+
     # 3. [F] interact pill detection on real mining prompt
     has_f, ratio = vision.detect_interact_prompt(_load("back_world.png"))
     assert has_f is True and ratio > 0.35, (has_f, ratio)
@@ -158,6 +166,11 @@ def run_tests() -> None:
     assert any(seg["action"] == "mushroom" for seg in p_portal["segments"]), p_portal["segments"]
     assert p_portal["total_cost"] < p_detour["total_cost"]
 
+    # Verify micro-leg merging collapses tiny road bends while keeping portal edges intact
+    tiny_wps = [[100.0, 100.0], [110.0, 102.0], [122.0, 105.0], [134.0, 108.0], [220.0, 120.0]]
+    merged_segs = cmap.waypoints_to_segments(tiny_wps, ["move", "move", "move", "move"])
+    assert len(merged_segs) < len(tiny_wps) - 1, merged_segs
+
     # Round-trip save/load cache + obstacle memory persistence
     with tempfile.TemporaryDirectory() as tmpdir:
         cmap.save(cache_dir=tmpdir)
@@ -232,11 +245,18 @@ def run_tests() -> None:
     race_dets = detector.detect_race_rings_cv(syn_race)
     assert len(race_dets) == 1 and abs(race_dets[0].cx - 1200.0) < 12.0, race_dets
 
-    # Test cabbage seed CV detector on synthetic glowing lime seed vs dark green grass
+    # Test cabbage seed CV detector on BOTH Priority-1 R-sonar blue badge AND Priority-2 glowing lime seed
     syn_cab = np.full((1080, 1920, 3), (55, 115, 50), dtype=np.uint8)
     syn_cab[420:444, 1320:1336] = (205, 248, 70)
     cab_dets = detector.detect_cabbage_seeds_cv(syn_cab)
     assert len(cab_dets) == 1 and abs(cab_dets[0].cx - 1328.0) < 12.0, cab_dets
+
+    syn_sonar = np.full((1080, 1920, 3), (45, 95, 50), dtype=np.uint8)
+    # 28x28 electric-blue circular sonar badge with bright white star core at (1400, 340)
+    syn_sonar[326:354, 1386:1414] = (20, 175, 250)
+    syn_sonar[335:345, 1395:1405] = (248, 250, 255)
+    sonar_dets = detector.detect_cabbage_seeds_cv(syn_sonar)
+    assert len(sonar_dets) >= 1 and abs(sonar_dets[0].cx - 1400.0) < 12.0 and sonar_dets[0].score >= 0.90, sonar_dets
 
     # Test HybridDetector fallback + dataset scaffold + prelabel round-trip in temp dir
     hd = detector.HybridDetector(model_path=None)

@@ -663,7 +663,8 @@ class CostMap25D:
             return False
         step_dist = math.hypot(x1 - x0, y1 - y0) / steps
         line_cost = float(np.sum(0.5 * (vals[:-1] + vals[1:]) * step_dist))
-        return line_cost <= orig_segment_cost * 1.06 + 0.25
+        # Allow a gentle smoothing budget so gentle curving roads don't shatter into dozens of tiny micro-legs
+        return line_cost <= orig_segment_cost * 1.12 + 0.65
 
     def _smooth_cell_indices(
         self,
@@ -705,16 +706,53 @@ class CostMap25D:
         self,
         waypoints: Sequence[Sequence[float]],
         actions_per_seg: Optional[Sequence[str]] = None,
+        min_leg_px: float = 24.0,
     ) -> List[Dict[str, object]]:
+        # Merge consecutive tiny non-portal road bends (< min_leg_px with turn <= 50 deg) so nav-goto
+        # doesn't waste leg budgets on 5-15px zigzags.
+        pts = [[float(p[0]), float(p[1])] for p in waypoints]
+        acts = [
+            (actions_per_seg[i] if (actions_per_seg and i < len(actions_per_seg)) else "move")
+            for i in range(max(0, len(pts) - 1))
+        ]
+        if len(pts) >= 3 and min_leg_px > 0:
+            merged_pts = [pts[0]]
+            merged_acts: List[str] = []
+            i = 0
+            while i < len(acts):
+                cur_a = acts[i]
+                p0 = merged_pts[-1]
+                p1 = pts[i + 1]
+                d1 = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+                if (
+                    d1 < min_leg_px
+                    and i + 1 < len(acts)
+                    and cur_a == acts[i + 1]
+                    and cur_a in ("move", "fly")
+                ):
+                    p2 = pts[i + 2]
+                    b1 = (math.degrees(math.atan2(p1[0] - p0[0], -(p1[1] - p0[1]))) + 360.0) % 360.0
+                    b2 = (math.degrees(math.atan2(p2[0] - p1[0], -(p2[1] - p1[1]))) + 360.0) % 360.0
+                    diff = abs((b2 - b1 + 180.0) % 360.0 - 180.0)
+                    if diff <= 52.0:
+                        # Skip intermediate micro-bend p1
+                        i += 1
+                        continue
+                merged_pts.append(p1)
+                merged_acts.append(cur_a)
+                i += 1
+            pts = merged_pts
+            acts = merged_acts
+
         segs: List[Dict[str, object]] = []
-        for idx in range(len(waypoints) - 1):
-            x0, y0 = float(waypoints[idx][0]), float(waypoints[idx][1])
-            x1, y1 = float(waypoints[idx + 1][0]), float(waypoints[idx + 1][1])
+        for idx in range(len(pts) - 1):
+            x0, y0 = pts[idx]
+            x1, y1 = pts[idx + 1]
             dx = x1 - x0
             dy = y1 - y0
             dist = math.hypot(dx, dy)
             bearing = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
-            act = actions_per_seg[idx] if (actions_per_seg and idx < len(actions_per_seg)) else "move"
+            act = acts[idx] if idx < len(acts) else "move"
             est_sec = max(0.5, dist / max(1.0, self.px_per_sec))
             segs.append(
                 {
@@ -733,7 +771,7 @@ class CostMap25D:
         world_frame: Image.Image,
         hint_xy: Optional[Tuple[float, float]] = None,
         search_radius_px: float = 240.0,
-        scale_candidates: Sequence[float] = (0.45, 0.55, 0.65, 0.78),
+        scale_candidates: Sequence[float] = (0.38, 0.45, 0.55, 0.65, 0.78, 0.92),
     ) -> Dict[str, object]:
         """Estimate player (x, y) on this world map by matching the circular minimap terrain.
 
@@ -776,6 +814,10 @@ class CostMap25D:
         s_feat = s_feat - ndimage.uniform_filter(s_feat, size=25)
         s_sq = s_feat * s_feat
 
+        # Detect whether minimap itself is mostly dark unexplored fog
+        mm_dark_ratio = float(((mm[:, :, 0] < 45) & (mm[:, :, 1] < 45) & (mm[:, :, 2] < 45))[ring].mean())
+        exclude_fog = mm_dark_ratio < 0.45
+
         best_score = -1.0
         best_xy = (0.0, 0.0)
         best_scale = 0.55
@@ -802,6 +844,16 @@ class CostMap25D:
             num = signal.fftconvolve(s_feat, t_zero[::-1, ::-1], mode="valid")
             den = np.sqrt(np.maximum(1e-6, signal.fftconvolve(s_sq, mask.astype(np.float32)[::-1, ::-1], mode="valid"))) * t_norm
             ncc = num / den
+            # Mask out candidate centers landing inside UI overlays or unexplored black fog
+            nh, nw = ncc.shape
+            cxs = np.clip(((x1 + np.arange(nw) + ts * 0.5) * 2.0 / self.cell_size).astype(np.int32), 0, self.gw - 1)
+            cys = np.clip(((y1 + np.arange(nh) + ts * 0.5) * 2.0 / self.cell_size).astype(np.int32), 0, self.gh - 1)
+            tc_grid = self.terrain_class[np.ix_(cys, cxs)]
+            invalid = tc_grid == TERRAIN_UI
+            if exclude_fog:
+                invalid = invalid | (tc_grid == TERRAIN_FOG)
+            if not np.all(invalid):
+                ncc = np.where(invalid, -1.0, ncc)
             idx = int(np.argmax(ncc))
             py, px = divmod(idx, ncc.shape[1])
             score = float(ncc[py, px])
@@ -960,10 +1012,13 @@ def navigate_with_costmap(
     arrive_px: float = 28.0,
     sprint: bool = True,
     spam_f: bool = True,
+    mount: bool = False,
     cache_dir: str = DEFAULT_CACHE_DIR,
     abort_fn=None,
 ) -> Dict[str, object]:
     """Closed-loop A* navigator with online obstacle learning & automatic replanning."""
+    from . import actions as act_mod
+
     gw = find_game_window()
     cur_xy = start_xy
     if cur_xy is None:
@@ -973,92 +1028,116 @@ def navigate_with_costmap(
             return {"ok": False, "error": "initial_localization_failed", "localization": loc}
         cur_xy = (float(loc["x"]), float(loc["y"]))
 
+    # Wolf mount (~速 800) travels ~1.75x faster than on-foot sprint
+    eff_px_per_sec = cmap.px_per_sec * (1.75 if mount else 1.0)
+    mounted = False
+    if mount:
+        act_mod.toggle_mount()
+        mounted = True
+
     history: List[Dict[str, object]] = []
     arrived = False
     obstacles_added = 0
 
-    for leg_idx in range(max_legs):
-        if abort_fn is not None and abort_fn():
-            break
-        dist_goal = math.hypot(goal_xy[0] - cur_xy[0], goal_xy[1] - cur_xy[1])
-        if dist_goal <= arrive_px:
-            arrived = True
-            break
+    try:
+        for leg_idx in range(max_legs):
+            if abort_fn is not None and abort_fn():
+                break
+            dist_goal = math.hypot(goal_xy[0] - cur_xy[0], goal_xy[1] - cur_xy[1])
+            if dist_goal <= arrive_px:
+                arrived = True
+                break
 
-        plan = cmap.find_path(cur_xy, goal_xy, mode=mode, smooth=True)
-        if not plan.get("ok") or not plan.get("segments"):
-            return {"ok": False, "error": "path_failed", "cur_xy": list(cur_xy), "history": history}
+            plan = cmap.find_path(cur_xy, goal_xy, mode=mode, smooth=True)
+            if not plan.get("ok") or not plan.get("segments"):
+                return {"ok": False, "error": "path_failed", "cur_xy": list(cur_xy), "history": history}
 
-        seg = plan["segments"][0]  # type: ignore[index]
-        bearing = float(seg["bearing_deg"])
-        walk_sec = min(6.5, max(0.8, float(seg["est_sec"])))
+            seg = plan["segments"][0]  # type: ignore[index]
+            bearing = float(seg["bearing_deg"])
+            seg_sec = float(seg["dist_px"]) / max(1.0, eff_px_per_sec)
+            walk_sec = min(6.5, max(0.75, seg_sec))
 
-        res = nav_mod.approach_poi(
-            target_bearing=bearing,
-            walk_sec=walk_sec,
-            sprint=sprint,
-            spam_f=spam_f,
-            unstuck=True,
-            abort_fn=abort_fn,
-        )
-        if res.get("aborted"):
-            history.append({"leg": leg_idx, "aborted": True, "seg": seg})
-            break
-
-        # Predict new position & refine via local minimap match
-        rad = math.radians(bearing)
-        pred_x = cur_xy[0] + math.sin(rad) * min(float(seg["dist_px"]), walk_sec * cmap.px_per_sec)
-        pred_y = cur_xy[1] - math.cos(rad) * min(float(seg["dist_px"]), walk_sec * cmap.px_per_sec)
-
-        img_after = capture_client(gw=gw)
-        hud_after = res.get("hud_after") or vision.check_hud_state(img_after)
-        loc_after = cmap.localize_minimap(img_after, hint_xy=(pred_x, pred_y), search_radius_px=190.0)
-        if loc_after["ok"] and float(loc_after["confidence"]) >= 0.38:
-            new_xy = (float(loc_after["x"]), float(loc_after["y"]))
-        else:
-            # Fallback to dead-reckoning (discounted if unstuck fired)
-            scale = 0.35 if int(res.get("unstuck_count", 0)) > 0 else 0.85
-            new_xy = (
-                cur_xy[0] + (pred_x - cur_xy[0]) * scale,
-                cur_xy[1] + (pred_y - cur_xy[1]) * scale,
+            res = nav_mod.approach_poi(
+                target_bearing=bearing,
+                walk_sec=walk_sec,
+                sprint=sprint,
+                spam_f=spam_f and (not mounted),
+                unstuck=True,
+                abort_fn=abort_fn,
             )
+            if res.get("aborted"):
+                history.append({"leg": leg_idx, "aborted": True, "seg": seg})
+                break
 
-        moved_px = math.hypot(new_xy[0] - cur_xy[0], new_xy[1] - cur_xy[1])
-        snagged = int(res.get("unstuck_count", 0)) > 0 or (walk_sec >= 1.5 and moved_px < 12.0)
+            # Predict new position & refine via local minimap match
+            rad = math.radians(bearing)
+            pred_x = cur_xy[0] + math.sin(rad) * min(float(seg["dist_px"]), walk_sec * eff_px_per_sec)
+            pred_y = cur_xy[1] - math.cos(rad) * min(float(seg["dist_px"]), walk_sec * eff_px_per_sec)
 
-        if snagged:
-            # Stamp obstacle slightly ahead of where we stalled so next A* leg routes cleanly around it
-            obs_x = new_xy[0] + math.sin(rad) * 18.0
-            obs_y = new_xy[1] - math.cos(rad) * 18.0
-            cmap.memory.record_obstacle(obs_x, obs_y, radius=26.0, penalty=20.0, reason="nav_stuck")
-            obstacles_added += 1
-        elif moved_px >= 14.0:
-            # Reinforce proven passable midpoint & endpoint
-            cmap.memory.record_passable((cur_xy[0] + new_xy[0]) * 0.5, (cur_xy[1] + new_xy[1]) * 0.5)
-            cmap.memory.record_passable(new_xy[0], new_xy[1])
+            img_after = capture_client(gw=gw)
+            hud_after = res.get("hud_after") or vision.check_hud_state(img_after)
+            search_rad = max(72.0, min(180.0, walk_sec * eff_px_per_sec * 1.45))
+            max_phys_jump = max(55.0, walk_sec * eff_px_per_sec * 1.75)
+            loc_after = cmap.localize_minimap(img_after, hint_xy=(pred_x, pred_y), search_radius_px=search_rad)
+            loc_jump = (
+                math.hypot(float(loc_after["x"]) - cur_xy[0], float(loc_after["y"]) - cur_xy[1])
+                if loc_after.get("ok")
+                else 1e9
+            )
+            if loc_after["ok"] and float(loc_after["confidence"]) >= 0.46 and loc_jump <= max_phys_jump:
+                new_xy = (float(loc_after["x"]), float(loc_after["y"]))
+            else:
+                # Fallback to dead-reckoning (discounted if unstuck fired)
+                scale = 0.35 if int(res.get("unstuck_count", 0)) > 0 else 0.85
+                new_xy = (
+                    cur_xy[0] + (pred_x - cur_xy[0]) * scale,
+                    cur_xy[1] + (pred_y - cur_xy[1]) * scale,
+                )
 
-        history.append(
-            {
-                "leg": leg_idx,
-                "from": [round(cur_xy[0], 1), round(cur_xy[1], 1)],
-                "to": [round(new_xy[0], 1), round(new_xy[1], 1)],
-                "target_seg": seg,
-                "moved_px": round(moved_px, 1),
-                "snagged": snagged,
-                "loc_conf": loc_after.get("confidence"),
-            }
-        )
-        cur_xy = new_xy
+            moved_px = math.hypot(new_xy[0] - cur_xy[0], new_xy[1] - cur_xy[1])
+            snagged = int(res.get("unstuck_count", 0)) > 0 or (walk_sec >= 1.5 and moved_px < 12.0)
 
-        if not hud_after.get("in_world_hud", True):
-            # Triggered repair dialog / tutorial / revive / cutscene — stop safely and classify anomaly
-            try:
-                from . import ocr_tpl
+            if snagged:
+                # Stamp obstacle slightly ahead of where we stalled so next A* leg routes cleanly around it
+                obs_x = new_xy[0] + math.sin(rad) * 18.0
+                obs_y = new_xy[1] - math.cos(rad) * 18.0
+                cmap.memory.record_obstacle(obs_x, obs_y, radius=26.0, penalty=20.0, reason="nav_stuck")
+                obstacles_added += 1
+            elif moved_px >= 14.0:
+                # Reinforce proven passable midpoint & endpoint
+                cmap.memory.record_passable((cur_xy[0] + new_xy[0]) * 0.5, (cur_xy[1] + new_xy[1]) * 0.5)
+                cmap.memory.record_passable(new_xy[0], new_xy[1])
 
-                history[-1]["anomaly"] = ocr_tpl.detect_screen_anomaly(img_after, use_ocr=ocr_tpl.is_ocr_available())
-            except Exception:
-                pass
-            break
+            history.append(
+                {
+                    "leg": leg_idx,
+                    "from": [round(cur_xy[0], 1), round(cur_xy[1], 1)],
+                    "to": [round(new_xy[0], 1), round(new_xy[1], 1)],
+                    "target_seg": seg,
+                    "moved_px": round(moved_px, 1),
+                    "snagged": snagged,
+                    "loc_conf": loc_after.get("confidence"),
+                }
+            )
+            cur_xy = new_xy
+
+            if not hud_after.get("in_world_hud", True):
+                # Triggered repair dialog / tutorial / revive / cutscene — stop safely and classify anomaly
+                try:
+                    from . import ocr_tpl
+
+                    history[-1]["anomaly"] = ocr_tpl.detect_screen_anomaly(img_after, use_ocr=ocr_tpl.is_ocr_available())
+                except Exception:
+                    pass
+                break
+    finally:
+        if mounted:
+            act_mod.toggle_mount()
+
+    # Check final arrival after completing the last leg
+    final_dist = math.hypot(goal_xy[0] - cur_xy[0], goal_xy[1] - cur_xy[1])
+    if final_dist <= arrive_px:
+        arrived = True
 
     # Persist any learned obstacles & proven trails
     mem_path = os.path.join(cache_dir, f"{cmap.name}_memory.json")
@@ -1067,8 +1146,9 @@ def navigate_with_costmap(
     return {
         "ok": arrived,
         "arrived": arrived,
+        "mount": mount,
         "final_xy": [round(cur_xy[0], 1), round(cur_xy[1], 1)],
-        "dist_to_goal_px": round(math.hypot(goal_xy[0] - cur_xy[0], goal_xy[1] - cur_xy[1]), 1),
+        "dist_to_goal_px": round(final_dist, 1),
         "legs_run": len(history),
         "obstacles_added": obstacles_added,
         "memory_path": mem_path,

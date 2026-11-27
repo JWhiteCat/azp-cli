@@ -147,8 +147,12 @@ def solve_puzzle_auto(
             skipped_empty.append(el)
             continue
         if not hud["near_kibo_puzzle"]:
-            solved_by = el
-            break
+            # Wait briefly and re-verify so temporary skill-cooldown dimming is not mistaken for a solve
+            time.sleep(1.1)
+            hud2 = vision.check_hud_state(capture_client(gw=gw))
+            if hud2["in_world_hud"] and not hud2["near_kibo_puzzle"]:
+                solved_by = el
+                break
 
     # Loot any spawned rewards/drops
     actions.interact_spam(taps=4, interval=0.2)

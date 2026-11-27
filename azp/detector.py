@@ -458,53 +458,96 @@ def detect_race_rings_cv(rgb: np.ndarray, roi: Tuple[int, int, int, int] = (80, 
     return dets
 
 
-def detect_cabbage_seeds_cv(rgb: np.ndarray, roi: Tuple[int, int, int, int] = (140, 180, 1780, 880)) -> List[Detection]:
-    """Classical CV detector for 变身菜鸡 glowing neon lime-green seeds (bright lime core + vertical glow)."""
+def detect_cabbage_seeds_cv(rgb: np.ndarray, roi: Tuple[int, int, int, int] = (140, 140, 1780, 880)) -> List[Detection]:
+    """Classical CV detector for 变身菜鸡 collectible seeds (supports BOTH R-sonar blue badges AND glowing green seeds).
+
+    - Priority 1: Crisp circular electric-blue R-sonar target badges (~30x30px with bright white star core).
+    - Priority 2: Glowing neon-lime floating seed sprouts, with full-screen center exclusion around the
+      player's own helicopter cabbage head so it never self-locks.
+    """
     x1, y1, x2, y2 = roi
     sub = rgb[y1:y2, x1:x2]
     a = sub[::2, ::2].astype(np.int16)
-    # Glowing seeds have ultra-bright yellow-lime core (G > 235, R 155..245, B < 135, G - B > 115)
-    # which separates cleanly from ordinary dark/mid-tone grass (G ~ 90..170).
-    glow = (
-        (a[:, :, 1] > 232)
-        & (a[:, :, 0] > 145)
-        & (a[:, :, 0] < 248)
-        & (a[:, :, 2] < 135)
-        & ((a[:, :, 1] - a[:, :, 2]) > 110)
-    )
-    if int(glow.sum()) < 6:
-        return []
-    lbl, n = ndimage.label(ndimage.binary_dilation(glow, iterations=1))
-    dets: List[Detection] = []
     cls_id = DEFAULT_CLASSES.index("cabbage_seed")
-    for idx in range(1, n + 1):
-        comp = (lbl == idx) & glow
-        cnt = int(comp.sum())
-        if cnt < 6 or cnt > 260:
-            continue
-        ys, xs = np.where(comp)
-        bw = int(xs.max() - xs.min()) + 1
-        bh = int(ys.max() - ys.min()) + 1
-        if bw > 36 or bh > 52:
-            continue
-        cx = x1 + float(xs.mean()) * 2.0
-        cy = y1 + float(ys.mean()) * 2.0
-        # Exclude player chicken's own head/leaves at bottom-center (x=760..1160, y>620)
-        if 760 <= cx <= 1160 and cy > 620:
-            continue
-        score = min(0.92, 0.55 + min(0.35, cnt / 90.0))
-        dets.append(
-            Detection(
-                cls_id=cls_id,
-                label="cabbage_seed",
-                score=score,
-                x1=float(x1 + int(xs.min()) * 2),
-                y1=float(y1 + int(ys.min()) * 2),
-                x2=float(x1 + int(xs.max() + 1) * 2),
-                y2=float(y1 + int(ys.max() + 1) * 2),
-                source="cv_cabbage_seed",
+    dets: List[Detection] = []
+
+    # 1. Blue R-sonar circular target badges
+    blue = (a[:, :, 2] > 175) & (a[:, :, 1] > 105) & (a[:, :, 0] < 95) & ((a[:, :, 2] - a[:, :, 0]) > 95)
+    if int(blue.sum()) >= 25:
+        lbl, n = ndimage.label(ndimage.binary_dilation(blue, iterations=1))
+        for idx in range(1, n + 1):
+            comp = (lbl == idx) & blue
+            cnt = int(comp.sum())
+            if cnt < 35 or cnt > 380:
+                continue
+            ys, xs = np.where(comp)
+            bw = (int(xs.max() - xs.min()) + 1) * 2
+            bh = (int(ys.max() - ys.min()) + 1) * 2
+            if not (20 <= bw <= 58 and 20 <= bh <= 58) or abs(bw - bh) > 18:
+                continue
+            fx1, fy1 = int(xs.min()) * 2, int(ys.min()) * 2
+            fx2, fy2 = min(sub.shape[1], (int(xs.max()) + 1) * 2), min(sub.shape[0], (int(ys.max()) + 1) * 2)
+            patch = sub[fy1:fy2, fx1:fx2]
+            white = int(((patch[:, :, 0] > 215) & (patch[:, :, 1] > 215) & (patch[:, :, 2] > 215)).sum())
+            if white < 16:
+                continue
+            score = min(0.97, 0.72 + min(0.24, white / 220.0))
+            dets.append(
+                Detection(
+                    cls_id=cls_id,
+                    label="cabbage_seed",
+                    score=score,
+                    x1=float(x1 + fx1),
+                    y1=float(y1 + fy1),
+                    x2=float(x1 + fx2),
+                    y2=float(y1 + fy2),
+                    source="cv_cabbage_badge",
+                )
             )
-        )
+
+    if dets:
+        dets.sort(key=lambda d: d.score, reverse=True)
+        return dets
+
+    # 2. Fallback between R-sonar pings: bright glowing neon-lime floating seed sprouts
+    # Exclude the player's own helicopter cabbage chicken in ROI-relative center band
+    glow = (
+        (a[:, :, 1] > 228)
+        & (a[:, :, 0] > 140)
+        & (a[:, :, 0] < 245)
+        & (a[:, :, 2] < 155)
+        & ((a[:, :, 1] - a[:, :, 2]) > 90)
+    )
+    if int(glow.sum()) >= 10:
+        lbl, n = ndimage.label(ndimage.binary_dilation(glow, iterations=1))
+        rcx = (x2 - x1) * 0.5
+        rcy = (y2 - y1) * 0.52
+        for idx in range(1, n + 1):
+            comp = (lbl == idx) & glow
+            cnt = int(comp.sum())
+            if cnt < 10 or cnt > 900:
+                continue
+            ys, xs = np.where(comp)
+            cx_r = float(xs.mean()) * 2.0
+            cy_r = float(ys.mean()) * 2.0
+            # Exclude player's own green cabbage crown around center of viewport
+            if abs(cx_r - rcx) < 170.0 and abs(cy_r - rcy) < 150.0:
+                continue
+            fx1, fy1 = int(xs.min()) * 2, int(ys.min()) * 2
+            fx2, fy2 = min(sub.shape[1], (int(xs.max()) + 1) * 2), min(sub.shape[0], (int(ys.max()) + 1) * 2)
+            score = min(0.88, 0.55 + min(0.30, cnt / 200.0))
+            dets.append(
+                Detection(
+                    cls_id=cls_id,
+                    label="cabbage_seed",
+                    score=score,
+                    x1=float(x1 + fx1),
+                    y1=float(y1 + fy1),
+                    x2=float(x1 + fx2),
+                    y2=float(y1 + fy2),
+                    source="cv_cabbage_glow",
+                )
+            )
     dets.sort(key=lambda d: d.score, reverse=True)
     return dets
 

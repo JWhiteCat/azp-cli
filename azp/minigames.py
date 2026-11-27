@@ -267,12 +267,14 @@ def solve_cabbage_run(
         yolo = det_mod.YoloOnnxDetector(model_path=det_mod.DEFAULT_MODEL_PATH)
 
     l, t, _, _ = gw.client_rect
-    x1, y1, x2, y2 = 140, 180, 1780, 880
+    x1, y1, x2, y2 = 140, 140, 1780, 880
     t0 = time.time()
     frames = 0
     seen_frames = 0
     missed_streak = 0
     last_err = 0.0
+    next_hop = t0 + 0.9
+    next_boost = t0 + 1.4
 
     with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
         ctl.key_down("w")
@@ -287,29 +289,49 @@ def solve_cabbage_run(
                 if dets:
                     seen_frames += 1
                     missed_streak = 0
-                    # Pick closest/largest visible seed
-                    best = max(dets, key=lambda d: (d.w * d.h) * d.score)
+                    # Prefer lower/ground-reachable seeds near horizontal center (avoid getting stuck staring at treetop seeds)
+                    best = max(
+                        dets,
+                        key=lambda d: (y1 + d.cy) - 0.35 * abs((x1 + d.cx) - 960.0),
+                    )
                     cx = x1 + best.cx
+                    cy = y1 + best.cy
                     err_x = cx - 960.0
                     last_err = err_x
-                    if abs(err_x) > 20.0:
-                        step_dx = int(max(-220.0, min(220.0, err_x * gain)))
-                        ctl.mouse_move_rel(step_dx, 0, steps=1, step_delay=0.0)
+                    if abs(err_x) > 18.0:
+                        step_dx = int(max(-240.0, min(240.0, err_x * gain)))
+                        steps = max(1, abs(step_dx) // 34)
+                        ctl.mouse_move_rel(step_dx, 0, steps=steps, step_delay=0.002)
+                    now = time.time()
+                    # 3D altitude control for helicopter cabbage chicken (Space=ascend, Ctrl=descend)
+                    if cy < 470.0 and now >= next_hop:
+                        ctl.tap("space", hold=0.18, after=0.0)
+                        next_hop = now + 0.30
+                    elif cy > 640.0 and now >= next_hop:
+                        ctl.tap("ctrl", hold=0.18, after=0.0)
+                        next_hop = now + 0.30
+                    if now >= next_boost:
+                        ctl.tap("r", hold=0.05, after=0.0)
+                        next_boost = now + 2.4
                 else:
                     missed_streak += 1
-                    if 8 <= missed_streak <= 50:
-                        sweep = 130 if last_err >= 0 else -130
-                        ctl.mouse_move_rel(sweep, 0, steps=1, step_delay=0.0)
-                    elif missed_streak > 70:
+                    now = time.time()
+                    if now >= next_boost:
+                        ctl.tap("r", hold=0.05, after=0.0)
+                        next_boost = now + 2.4
+                    if 6 <= missed_streak <= 65:
+                        sweep = 160 if last_err >= 0 else -160
+                        ctl.mouse_move_rel(sweep, 0, steps=5, step_delay=0.002)
+                    elif missed_streak > 85:
                         break
-                time.sleep(0.035)
+                time.sleep(0.032)
         finally:
             ctl.key_up("w")
             ctl.release_movement_keys()
 
     return {
         "ok": True,
-        "detector": "onnx_yolo" if yolo is not None else "cv_cabbage_seed",
+        "detector": "onnx_yolo" if yolo is not None else "cv_cabbage_badge",
         "elapsed": round(time.time() - t0, 2),
         "frames": frames,
         "seen_frames": seen_frames,

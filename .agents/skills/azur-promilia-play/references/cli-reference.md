@@ -38,15 +38,16 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 ## High-Level Exploration, Combat, Rewards & Minigames
 | Command | Module | Purpose |
 | --- | --- | --- |
-| `python azp.py mount` | `actions` | Toggle Kibo mount (`T`) |
-| `python azp.py exit-home [--timeout 18]` | `actions` | Exit Home Ranch (`星临者的家园`) via `H` → `确认 (1258, 676)` and wait for open-world HUD |
+| `python azp.py mount [--select bird\|wolf]` | `actions` | Toggle Kibo mount (`T`) or explicitly pick Bird/Wolf via hold-`T` wheel |
+| `python azp.py exit-home [--timeout 25]` | `actions` | Exit Home Ranch (`星临者的家园`) via `H` → `确认 (1245, 660)` and wait for open-world HUD |
+| `python azp.py home-harvest [--stay] [--timeout 25]` | `actions` | Enter Home Ranch (`H`), one-click harvest `建筑管理 → 一键收取` (`尘石`/矿/木/结晶), and return to open world |
 | `python azp.py interact [--taps 5] [--interval 0.18]` | `actions` | Rapid `F` tapping for chests, teleporters, pickups |
-| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector) and sprint forward with minimap-diff unstuck |
+| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector, 2-pass closed-loop yaw) and sprint forward with minimap-diff unstuck |
 | `python azp.py nav-bake --map <png> --name <id> [--cell 6] [--preview <png>]` | `navmesh` | Bake 1920×1080 world map into cached 2.5D costmap (roads/grass/slope/ruins/water/boss/fog) |
-| `python azp.py nav-plan --name <id> --start X Y --goal X Y [--mode ground\|fly] [--preview <png>]` | `navmesh` | Plan smoothed 8-connected A* path using 2.5D costmap + online obstacle memory |
+| `python azp.py nav-plan --name <id> --start X Y --goal X Y [--mode ground\|fly] [--preview <png>]` | `navmesh` | Plan smoothed 8-connected A* path using 2.5D costmap + online obstacle memory (with micro-leg merging) |
 | `python azp.py nav-obstacle <add\|portal\|list\|clear> --name <id> [--xy X Y]` | `navmesh` | Inspect or mutate persisted online obstacle stamps and 3D portal edges (`jump`/`mushroom`/`fly`) |
-| `python azp.py nav-localize --name <id> [--frame <png>] [--hint X Y]` | `navmesh` | Localize player `(x, y)` on baked world map from minimap terrain correlation |
-| `python azp.py nav-goto --name <id> --goal X Y [--start X Y] [--mode ground\|fly]` | `navmesh` | Closed-loop A* navigation that auto-records stuck snags and replans around them |
+| `python azp.py nav-localize --name <id> [--frame <png>] [--hint X Y]` | `navmesh` | Localize player `(x, y)` on baked world map from minimap terrain correlation (masks UI & fog) |
+| `python azp.py nav-goto --name <id> --goal X Y [--start X Y] [--mode ground\|fly] [--mount]` | `navmesh` | Closed-loop A* navigation that auto-records stuck snags and replans around them (`--mount` uses ~1.75× Wolf speed) |
 | `python azp.py world-map <charlulu\|sprout_valley> [--map-open]` | `actions` | Open `世界地图 (1810, 950)` and enter target region map |
 | `python azp.py teleport <x> <y> [--map-open] [--timeout 18]` | `actions` | Click map waypoint → click `传送` → poll until open-world HUD returns |
 | `python azp.py kibo-puzzle <element> [--wait 2.8]` | `actions` | Hold `Q` wheel and cast specific element (`fire/earth/grass/ice/water/thunder/light`) |
@@ -76,7 +77,8 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py claim-valley [--clicks 2]` | `actions` | Auto-claim `M` → `探索度` → `山谷秘藏` regional exploration rewards |
 | `python azp.py claim-events [--clicks 2]` | `actions` | Safely claim `F1` `星临旅记` event rewards |
 | `python azp.py claim-codex [--clicks 3]` | `actions` | Claim `Esc` → `星临图志` → `调查奖励` star-level Codex rewards |
-| `python azp.py build-facility [--wait 3.0]` | `actions` | Repair or build nearby Booster Facility (`增效设施`) via `F` → `确认`/`建造` |
+| `python azp.py claim-journal [--tabs ...] [--clicks 2]` | `actions` | Claim `Y` (`星之旅录`) completed top-row tasks across tabs + unlocked milestone orbs |
+| `python azp.py build-facility [--wait 4.2]` | `actions` | Repair or build nearby Booster Facility (`增效设施`) via `F` → `确认`/`建造 (1570, 885)` |
 
 ## Autonomous, Cooperative & Offline Utilities
 | Command | Module | Purpose |

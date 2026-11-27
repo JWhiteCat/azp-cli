@@ -103,11 +103,34 @@ def kibo_puzzle(element: str, wait_after: float = 2.8) -> Dict[str, object]:
     return {"ok": True, "element": key, "slot": [x, y]}
 
 
+# 1920x1080 Mount wheel (hold T) slot coordinates
+MOUNT_WHEEL_SLOTS: Dict[str, tuple[int, int]] = {
+    "bird": (960, 290),   # Slot 1: Bird mount (速 350, hover/fly)
+    "wolf": (1140, 345),  # Slot 2: Wolf mount (速 800, fast ground sprint)
+}
+
+
 def toggle_mount() -> Dict[str, object]:
     """Summon or dismount Kibo mount via T (waits 0.95s so mount camera lock finishes)."""
     ensure_focus()
     ctl.tap("t", hold=0.06, after=0.95)
     return {"ok": True, "action": "toggle_mount"}
+
+
+def select_mount(mount_name: str) -> Dict[str, object]:
+    """Open the Mount Wheel (hold T for 0.85s, release -> wheel stays open) and click the target mount slot."""
+    key = mount_name.lower().strip()
+    if key not in MOUNT_WHEEL_SLOTS:
+        raise ValueError(f"Unknown mount {mount_name!r}. Valid: {list(MOUNT_WHEEL_SLOTS)}")
+    gw = ensure_focus()
+    ctl.key_down("t")
+    time.sleep(0.85)
+    ctl.key_up("t")
+    time.sleep(0.35)
+    x, y = MOUNT_WHEEL_SLOTS[key]
+    ctl.mouse_click_client(x, y, hold=0.08, gw=gw)
+    time.sleep(0.95)
+    return {"ok": True, "action": "select_mount", "mount": key, "slot": [x, y]}
 
 
 def dismiss_reward(clicks: int = 2, interval: float = 0.7) -> Dict[str, object]:
@@ -209,39 +232,134 @@ def switch_world_zone(zone: str, open_map_first: bool = True) -> Dict[str, objec
     return {"ok": True, "zone": key, "click": [zx, zy]}
 
 
-def exit_home_ranch(timeout: float = 18.0) -> Dict[str, object]:
-    """Exit Home Ranch (星临者的家园) via H -> 确认 (1258, 676) and wait for open-world HUD."""
+def exit_home_ranch(timeout: float = 25.0) -> Dict[str, object]:
+    """Exit Home Ranch (星临者的家园) via H -> 确认 (1245, 660) and wait for open-world HUD."""
     gw = ensure_focus()
     img = capture_client(gw=gw)
     if vision.is_confirm_dialog(img):
-        ctl.mouse_click_client(1258, 676, gw=gw)
+        ctl.mouse_click_client(1245, 660, gw=gw)
         time.sleep(0.8)
     else:
         ctl.tap("h", hold=0.06, after=0.9)
         chk = capture_client(gw=gw)
         if vision.is_confirm_dialog(chk):
-            ctl.mouse_click_client(1258, 676, gw=gw)
+            ctl.mouse_click_client(1245, 660, gw=gw)
             time.sleep(0.8)
     wait_res = wait_for_hud(timeout=timeout, poll=0.8)
     return {"ok": wait_res["ok"], "wait": wait_res}
 
 
-def claim_valley_treasure(lv_clicks: int = 2) -> Dict[str, object]:
-    """Open M -> 探索度 (1850, 805) -> 山谷秘藏 (1195, 800) -> claim unlocked milestone rewards."""
+def home_harvest(return_to_world: bool = True, timeout: float = 25.0) -> Dict[str, object]:
+    """Enter Home Ranch (H), one-click harvest all production buildings (G -> 建筑管理 -> 一键收取), and optionally exit.
+
+    Live-verified to collect accumulated 尘石 (Dust Stone), 风铜矿, wood, crops, and all 7 elemental crystals.
+    """
+    from . import coop
+
     gw = ensure_focus()
-    ctl.tap("m", hold=0.06, after=0.9)
-    ctl.mouse_click_client(1850, 805, gw=gw)
+    img = capture_client(gw=gw)
+    entered = False
+    if not coop.is_home_ranch(img):
+        ctl.tap("h", hold=0.06, after=1.1)
+        chk = capture_client(gw=gw)
+        if vision.is_confirm_dialog(chk):
+            ctl.mouse_click_client(1245, 660, gw=gw)
+            entered = True
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                time.sleep(0.8)
+                cur = capture_client(gw=gw)
+                if coop.is_home_ranch(cur):
+                    break
+        else:
+            return {"ok": False, "error": "home_enter_dialog_not_shown"}
+
+    # Open 家园中枢 (G) -> 建筑管理 (180, 730) -> 一键收取 (105, 895)
+    ctl.tap("g", hold=0.06, after=1.1)
+    ctl.mouse_click_client(180, 730, gw=gw)
+    time.sleep(1.0)
+    ctl.mouse_click_client(105, 895, gw=gw)
+    time.sleep(1.2)
+    # Close 收获物品 popup X (1855, 245) and dismiss any Home Ranch level-up banner (960, 950)
+    ctl.mouse_click_client(1855, 245, gw=gw)
     time.sleep(0.8)
-    ctl.mouse_click_client(1195, 800, gw=gw)
+    ctl.mouse_click_client(960, 950, gw=gw)
+    time.sleep(0.6)
+    ctl.mouse_click_client(960, 950, gw=gw)
+    time.sleep(0.5)
+    # Exit 建筑管理 & 家园中枢
+    ctl.tap("esc", hold=0.06, after=0.6)
+    ctl.tap("esc", hold=0.06, after=0.7)
+
+    exit_res = exit_home_ranch(timeout=timeout) if return_to_world else None
+    return {
+        "ok": True if exit_res is None else bool(exit_res["ok"]),
+        "entered_home": entered,
+        "returned_to_world": return_to_world,
+        "exit": exit_res,
+    }
+
+
+def claim_valley_treasure(lv_clicks: int = 2) -> Dict[str, object]:
+    """Open M -> 探索度 (1850, 815) -> 山谷秘藏 (1200, 795) -> claim unlocked milestone rewards."""
+    gw = ensure_focus()
+    ctl.tap("m", hold=0.06, after=1.0)
+    ctl.mouse_click_client(1850, 815, gw=gw)
+    time.sleep(0.8)
+    ctl.mouse_click_client(1200, 795, gw=gw)
     time.sleep(0.8)
     for _ in range(lv_clicks):
         ctl.mouse_click_client(1380, 415, gw=gw)
         time.sleep(0.75)
         ctl.mouse_click_client(960, 920, gw=gw)
         time.sleep(0.45)
-    ctl.tap("esc", hold=0.06, after=0.55)
-    ctl.tap("esc", hold=0.06, after=0.55)
+    for _ in range(3):
+        ctl.tap("esc", hold=0.06, after=0.55)
     return {"ok": True, "panel": "valley_treasure", "clicks": lv_clicks}
+
+
+# 1920x1080 Y (星之旅录) tab coordinates and bottom milestone orbs (50/120/190/220/260)
+JOURNAL_TABS: Dict[str, tuple[int, int]] = {
+    "main": (230, 175),       # 星轨旅录
+    "home": (230, 290),       # 筑梦据点
+    "adventure": (230, 390),  # 大冒险家
+    "companion": (230, 485),  # 旅伴手记
+    "trial": (230, 575),      # 试炼之路
+}
+JOURNAL_MILESTONE_X = (590, 780, 975, 1170, 1365)
+
+
+def claim_journal_rewards(
+    tabs: tuple[str, ...] = ("home", "adventure", "companion", "trial"),
+    clicks_per_tab: int = 2,
+    claim_milestones: bool = True,
+) -> Dict[str, object]:
+    """Open Y (星之旅录), sweep completed top-row tasks across tabs, and claim unlocked point milestone orbs."""
+    gw = ensure_focus()
+    ctl.tap("y", hold=0.06, after=1.0)
+    visited: List[str] = []
+    for name in tabs:
+        key = name.lower().strip()
+        if key not in JOURNAL_TABS:
+            continue
+        tx, ty = JOURNAL_TABS[key]
+        ctl.mouse_click_client(tx, ty, gw=gw)
+        time.sleep(0.65)
+        visited.append(key)
+        for _ in range(max(1, clicks_per_tab)):
+            # Completed tasks automatically sort to Row 1 (680, 195)
+            ctl.mouse_click_client(680, 195, gw=gw)
+            time.sleep(0.65)
+            ctl.mouse_click_client(960, 950, gw=gw)
+            time.sleep(0.45)
+    if claim_milestones:
+        for mx in JOURNAL_MILESTONE_X:
+            ctl.mouse_click_client(mx, 955, gw=gw)
+            time.sleep(0.55)
+            ctl.mouse_click_client(960, 950, gw=gw)
+            time.sleep(0.35)
+    ctl.tap("esc", hold=0.06, after=0.6)
+    return {"ok": True, "panel": "y_star_journal", "tabs": visited, "milestones": claim_milestones}
 
 
 def claim_event_rewards(journal_clicks: int = 2) -> Dict[str, object]:
@@ -312,24 +430,31 @@ def claim_codex_rewards(clicks: int = 3) -> Dict[str, object]:
     return {"ok": True, "panel": "codex_investigation", "clicks": clicks}
 
 
-def build_booster_facility(wait_after: float = 3.0) -> Dict[str, object]:
-    """Interact with a nearby Booster Facility (增效设施): handles both white repair modal and side build panel."""
+def build_booster_facility(wait_after: float = 4.2) -> Dict[str, object]:
+    """Interact with a nearby Booster Facility (增效设施): handles both white repair modal and side build panel.
+
+    Works both from open-world (taps F first) and when the modal/panel is already open (e.g. after goto-bearing).
+    """
     gw = ensure_focus()
-    ctl.tap("f", hold=0.06, after=0.75)
     img = capture_client(gw=gw)
+    hud = vision.check_hud_state(img)
+    if hud["in_world_hud"]:
+        ctl.tap("f", hold=0.06, after=0.85)
+        img = capture_client(gw=gw)
+        hud = vision.check_hud_state(img)
+
     if vision.is_confirm_dialog(img):
-        ctl.mouse_click_client(1258, 676, gw=gw)
+        ctl.mouse_click_client(1245, 660, gw=gw)
         time.sleep(wait_after)
         dismiss_reward(clicks=2, interval=0.5)
         return {"ok": True, "mode": "repair_modal"}
-    hud = vision.check_hud_state(img)
     if not hud["in_world_hud"] and not hud["loading"]:
-        # Right-hand 建造增效设施 parchment card: click 建造 (1570, 888), wait, then close X (1865, 50)
-        ctl.mouse_click_client(1570, 888, gw=gw)
+        # Right-hand 建造增效设施 parchment card: click 建造 (1570, 885), wait for cutscene, dismiss & Esc
+        ctl.mouse_click_client(1570, 885, gw=gw)
         time.sleep(wait_after)
-        ctl.mouse_click_client(1865, 50, gw=gw)
+        ctl.mouse_click_client(960, 950, gw=gw)
         time.sleep(0.6)
-        dismiss_reward(clicks=1, interval=0.4)
+        ctl.tap("esc", hold=0.06, after=0.5)
         return {"ok": True, "mode": "build_panel"}
     return {"ok": False, "mode": "no_dialog", "hud": hud}
 

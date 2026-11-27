@@ -1,10 +1,10 @@
 # AZP — 蓝色星原：旅谣 大世界探索与自动化 CLI（PC & MuMu 模拟器）
 
-针对 1920×1080 窗口化 PC 客户端（`AzurPromilia.exe`）及 **MuMu 模拟器 12 / NX（v5/v6）** 实测沉淀的可复用 Python CLI 与脚本库（纯标准库 + `pywin32` / `PIL` / `numpy` / `scipy` + 轻量 `opencv` / `onnxruntime` / `rapidocr-onnxruntime`，共 60 个子命令，内置 100Hz Win32 `BitBlt` 视觉追踪、`PrintWindow` 后台截屏、`WH_KEYBOARD_LL`/`WH_MOUSE_LL` 物理输入让权监测、`ViGEmBus` 虚拟 Xbox 手柄驱动、**2.5D 大地图代价网格 + A\* 寻路 + 在线障碍记忆**、**模板匹配 + RapidOCR 语义感知与异常复苏**、**可选零 PyTorch ONNX YOLO 3D 目标检测插件**，以及参考 MAA / maa-cli 实现的 **MuMu `external_renderer_ipc.dll` 截图增强 + 触控增强**）。
+针对 1920×1080 窗口化 PC 客户端（`AzurPromilia.exe`）及 **MuMu 模拟器 12 / NX（v5/v6）** 实测沉淀的可复用 Python CLI 与脚本库（纯标准库 + `pywin32` / `PIL` / `numpy` / `scipy` + 轻量 `opencv` / `onnxruntime` / `rapidocr-onnxruntime`，共 62 个子命令，内置 100Hz Win32 `BitBlt` 视觉追踪、`PrintWindow` 后台截屏、`WH_KEYBOARD_LL`/`WH_MOUSE_LL` 物理输入让权监测、`ViGEmBus` 虚拟 Xbox 手柄驱动、**2.5D 大地图代价网格 + A\* 寻路 + 在线障碍记忆**、**模板匹配 + RapidOCR 语义感知与异常复苏**、**可选零 PyTorch ONNX YOLO 3D 目标检测插件**，以及参考 MAA / maa-cli 实现的 **MuMu `external_renderer_ipc.dll` 截图增强 + 触控增强**）。
 
 ## 模块结构
 
-- [azp.py](azp.py)：统一命令行入口（60 个子命令，支持 `--backend pc|mumu` 及 `AZP_BACKEND`/`AZP_MUMU_*` 环境变量）
+- [azp.py](azp.py)：统一命令行入口（62 个子命令，支持 `--backend pc|mumu` 及 `AZP_BACKEND`/`AZP_MUMU_*` 环境变量）
 - [azp/mumu.py](azp/mumu.py)：MuMu 模拟器后端（参考 MAA `MumuExtras`/`MumuController`/`AdbController`），支持自动发现安装路径、`MuMuManager.exe info -v all` 实例枚举与包名（`com.manjuu.promilia`）display 自动绑定、版本门控（`>= 6.3.2.0`）、**截图增强**（`nemu_capture_display` 纯后台 ~14ms 1920×1080 RGBA 截屏）与**触控增强**（`nemu_input_event_finger_touch_down/up` 多指触控、平滑滑动、虚拟摇杆多指并发、`nemu_input_event_key_down/up` Linux 键码映射、`nemu_input_text` 及 ADB 降级）
 - [azp/win.py](azp/win.py)：PC 端 DPI 感知窗口定位、焦点管理、前台/后台 `PrintWindow` 客户区截屏、`user_idle_seconds()` 空闲检测、UIPI 管理员权限预检
 - [azp/input_ctl.py](azp/input_ctl.py)：基于 `SendInput` 硬件扫描码（`KEYEVENTF_SCANCODE`）的键鼠控制器、3D 相对视角旋转、地图拖拽与滚轮缩放
@@ -45,10 +45,12 @@ python azp.py mumu-key back                                 # 纯后台 MuMu IPC
 python azp.py mumu-text "hello"                             # 纯后台 MuMu IPC 文本输入
 python azp.py --backend mumu --mumu-index 0 status          # 通过全局 --backend mumu 复用通用子命令
 
-# 3. 移动、罗盘导航、退出家园与地图传送
-python azp.py mount                                         # 切换奇波骑乘 (T)
+# 3. 移动、罗盘导航、家园收取与地图传送
+python azp.py mount --select wolf                           # 切换指定奇波坐骑 (wolf 速800 / bird 速350)
+python azp.py home-harvest                                  # 进家园一键收取尘石/矿/木/结晶并自动返回大世界
 python azp.py exit-home                                     # 退出星临者的家园 (H -> 确认 -> 等待大世界 HUD)
 python azp.py goto-bearing 273.3 --sec 3.0                  # 对齐罗盘方位并冲刺拾取
+python azp.py nav-goto --name wolf_central --goal 1386 241 --mount  # 2.5D A* 寻路导航（支持坐骑加速与遇阻自动重规划）
 python azp.py world-map sprout_valley                       # 切换世界地图至新芽山谷 / charlulu
 python azp.py teleport 890 610                              # 打开地图→点击锚点→点击传送→等待加载完成
 
@@ -74,6 +76,7 @@ python azp.py yolo-prelabel                                 # 使用模板+CV �
 # 6. 空闲协作、一键领奖与提交前工具
 python azp.py coop-explore --idle-sec 15 --steps 20         # PC 端空闲协作探索（物理动键鼠 ~30ms 立即让权）
 python azp.py claim-daily                                   # 一键领取 F5 日常活跃 + F2 游记奖励
+python azp.py claim-journal                                 # 一键领取 Y 星之旅录各页签任务与积分里程碑
 python azp.py claim-valley                                  # 一键领取 M -> 探索度 -> 山谷秘藏奖励
 python azp.py claim-events                                  # 安全领取 F1 星临旅记活动奖励
 python azp.py claim-codex                                   # 一键领取 Esc -> 星临图志 -> 调查奖励
