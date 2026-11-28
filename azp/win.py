@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -49,7 +50,23 @@ class GameWindow:
         return sx, sy
 
 
-def find_game_window(title_substr: str = "AzurPromilia", class_name: str = "UnityWndClass") -> GameWindow:
+def _active_cloud_backend():
+    mod = sys.modules.get("azp.cloud")
+    if mod is None:
+        return None
+    return mod.get_active_cloud_backend()
+
+
+def find_game_window(
+    title_substr: str = "AzurPromilia",
+    class_name: str = "UnityWndClass",
+    *,
+    use_active_backend: bool = True,
+) -> GameWindow:
+    if use_active_backend and title_substr == "AzurPromilia" and class_name == "UnityWndClass":
+        cloud_backend = _active_cloud_backend()
+        if cloud_backend is not None:
+            return cloud_backend.find_window()
     matches = []
     iconic_matches = []
 
@@ -85,7 +102,12 @@ def find_game_window(title_substr: str = "AzurPromilia", class_name: str = "Unit
                     )
                 )
 
-    win32gui.EnumWindows(_cb, None)
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Game window not found (title~={title_substr!r}, class={class_name!r}; EnumWindows error: {exc})."
+        ) from exc
     if matches:
         return matches[0]
     if iconic_matches:
@@ -101,7 +123,17 @@ def is_admin() -> bool:
 
 
 def check_input_privilege(gw: Optional[GameWindow] = None) -> dict:
-    """Check whether current process can send SendInput events to the game window (UIPI check)."""
+    """Check whether current process can send input events to the game window (UIPI check)."""
+    cloud_backend = _active_cloud_backend()
+    if cloud_backend is not None:
+        gw = gw or cloud_backend.find_window()
+        return {
+            "self_admin": is_admin(),
+            "can_send_input": True,
+            "open_process_err": 0,
+            "backend": "cloud",
+            "transport": "PostMessageW",
+        }
     gw = gw or find_game_window()
     self_admin = is_admin()
     # PROCESS_QUERY_INFORMATION (0x0400) fails with ERROR_ACCESS_DENIED (5) across UIPI if target is elevated.
@@ -140,8 +172,14 @@ def capture_background(
     gw: Optional[GameWindow] = None,
     scale: float = 1.0,
     save_path: Optional[str] = None,
+    *,
+    use_active_backend: bool = True,
 ) -> Image.Image:
     """Capture AzurPromilia even when covered by other windows via PrintWindow(PW_RENDERFULLCONTENT=2)."""
+    if use_active_backend:
+        cloud_backend = _active_cloud_backend()
+        if cloud_backend is not None:
+            return cloud_backend.capture(scale=scale, save_path=save_path, gw=gw)
     gw = gw or find_game_window()
     wl, wt, wr, wb = gw.window_rect
     ww, wh = wr - wl, wb - wt
@@ -173,6 +211,18 @@ def capture_background(
 
 
 def focus_game(gw: Optional[GameWindow] = None, wait: float = 0.2) -> GameWindow:
+    cloud_backend = _active_cloud_backend()
+    if cloud_backend is not None:
+        # CloudShell accepts PostMessageW + PrintWindow in background — never steal desktop focus!
+        gw = gw or cloud_backend.find_window()
+        try:
+            if win32gui.IsIconic(gw.hwnd) or gw.width < 100 or gw.height < 100:
+                win32gui.ShowWindow(gw.hwnd, win32con.SW_SHOWNOACTIVATE)
+                time.sleep(0.25)
+                gw = cloud_backend.find_window()
+        except Exception:
+            pass
+        return gw
     gw = gw or find_game_window()
     if win32gui.IsIconic(gw.hwnd) or gw.width < 100 or gw.height < 100:
         win32gui.ShowWindow(gw.hwnd, win32con.SW_RESTORE)
@@ -198,6 +248,16 @@ def capture_client(
     grid_step: int = 160,
     save_path: Optional[str] = None,
 ) -> Image.Image:
+    cloud_backend = _active_cloud_backend()
+    if cloud_backend is not None:
+        return cloud_backend.capture(
+            roi=roi,
+            scale=scale,
+            grid=grid,
+            grid_step=grid_step,
+            save_path=save_path,
+            gw=gw,
+        )
     gw = gw or find_game_window()
     l, t, r, b = gw.client_rect
     if roi is not None:

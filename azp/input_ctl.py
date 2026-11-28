@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ctypes
+import struct
+import sys
 import time
 from ctypes import wintypes
 from typing import Iterable, Optional
@@ -15,6 +17,7 @@ INPUT_KEYBOARD = 1
 
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
 
 MOUSEEVENTF_MOVE = 0x0001
@@ -92,6 +95,13 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _INPUT_UNION)]
 
 
+def _active_cloud():
+    mod = sys.modules.get("azp.cloud")
+    if mod is None:
+        return None
+    return mod.get_active_cloud_backend()
+
+
 def _send_input(*inputs: INPUT) -> int:
     arr = (INPUT * len(inputs))(*inputs)
     return user32.SendInput(len(inputs), ctypes.byref(arr), ctypes.sizeof(INPUT))
@@ -113,14 +123,26 @@ def _key_event(key: str, up: bool = False) -> None:
 
 
 def key_down(key: str) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.key_down(key)
+        return
     _key_event(key, up=False)
 
 
 def key_up(key: str) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.key_up(key)
+        return
     _key_event(key, up=True)
 
 
 def tap(key: str, hold: float = 0.06, after: float = 0.04) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.key_press(key, hold=hold, repeat=1, after=after)
+        return
     key_down(key)
     time.sleep(hold)
     key_up(key)
@@ -129,6 +151,10 @@ def tap(key: str, hold: float = 0.06, after: float = 0.04) -> None:
 
 
 def hold_keys(keys: Iterable[str], duration: float) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.hold_keys(keys, duration)
+        return
     keys_list = list(keys)
     try:
         for k in keys_list:
@@ -140,12 +166,40 @@ def hold_keys(keys: Iterable[str], duration: float) -> None:
 
 
 def release_movement_keys() -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.release_movement_keys()
+        return
     for k in ("w", "a", "s", "d", "shift", "alt", "space"):
         key_up(k)
 
 
+def type_text(text: str, char_delay: float = 0.005) -> None:
+    """Type arbitrary Unicode text (CloudShell via WM_CHAR, PC via SendInput KEYEVENTF_UNICODE)."""
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.type_text(text, char_delay=char_delay)
+        return
+    if not text:
+        return
+    raw = text.encode("utf-16-le")
+    units = struct.unpack(f"<{len(raw) // 2}H", raw)
+    for idx, unit in enumerate(units):
+        down = INPUT(type=INPUT_KEYBOARD)
+        down.u.ki = KEYBDINPUT(wVk=0, wScan=unit, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)
+        up = INPUT(type=INPUT_KEYBOARD)
+        up.u.ki = KEYBDINPUT(wVk=0, wScan=unit, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
+        _send_input(down, up)
+        if char_delay > 0 and idx + 1 < len(units):
+            time.sleep(char_delay)
+
+
 def mouse_move_rel(dx: int, dy: int = 0, steps: int = 10, step_delay: float = 0.012) -> None:
     """Smooth relative mouse movement for 3D camera yaw/pitch control."""
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.mouse_move_rel(dx, dy, steps=steps, step_delay=step_delay)
+        return
     steps = max(1, steps)
     acc_x = 0.0
     acc_y = 0.0
@@ -167,6 +221,10 @@ def mouse_move_rel(dx: int, dy: int = 0, steps: int = 10, step_delay: float = 0.
 
 
 def mouse_btn(button: str = "left", down: bool = True) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.mouse_button(button, down)
+        return
     b = button.lower()
     flag_map = {
         ("left", True): MOUSEEVENTF_LEFTDOWN,
@@ -183,6 +241,10 @@ def mouse_btn(button: str = "left", down: bool = True) -> None:
 
 
 def mouse_click_here(button: str = "left", clicks: int = 1, hold: float = 0.05, interval: float = 0.08) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.click(button=button, clicks=clicks, hold=hold, interval=interval)
+        return
     for i in range(clicks):
         mouse_btn(button, True)
         time.sleep(hold)
@@ -192,6 +254,10 @@ def mouse_click_here(button: str = "left", clicks: int = 1, hold: float = 0.05, 
 
 
 def set_cursor_client(x: float, y: float, gw: Optional[GameWindow] = None, normalized: bool = False) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.move_to(x, y, normalized=normalized, gw=gw)
+        return
     gw = gw or find_game_window()
     sx, sy = gw.client_to_screen(x, y, normalized=normalized)
     user32.SetCursorPos(sx, sy)
@@ -207,6 +273,19 @@ def mouse_click_client(
     gw: Optional[GameWindow] = None,
     normalized: bool = False,
 ) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.click(
+            x,
+            y,
+            button=button,
+            clicks=clicks,
+            hold=hold,
+            hold_alt=hold_alt,
+            normalized=normalized,
+            gw=gw,
+        )
+        return
     gw = gw or find_game_window()
     if hold_alt:
         key_down("alt")
@@ -231,6 +310,10 @@ def mouse_drag_client(
     button: str = "left",
     gw: Optional[GameWindow] = None,
 ) -> None:
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.drag(x1, y1, x2, y2, duration=duration, steps=steps, button=button, gw=gw)
+        return
     gw = gw or find_game_window()
     sx1, sy1 = gw.client_to_screen(x1, y1)
     sx2, sy2 = gw.client_to_screen(x2, y2)
@@ -252,6 +335,10 @@ def mouse_drag_client(
 
 def mouse_scroll(delta: int, x: Optional[float] = None, y: Optional[float] = None, gw: Optional[GameWindow] = None) -> None:
     """Scroll mouse wheel; positive=up/zoom-in, negative=down/zoom-out (in notches)."""
+    cloud_backend = _active_cloud()
+    if cloud_backend is not None:
+        cloud_backend.scroll(delta, x=x, y=y, gw=gw)
+        return
     if x is not None and y is not None:
         set_cursor_client(x, y, gw=gw)
         time.sleep(0.04)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -18,13 +19,35 @@ from .win import capture_client, focus_game
 
 
 class FastROIGrabber:
-    """Ultra-fast (~3-5ms) Win32 GDI BitBlt screen ROI grabber for real-time CV minigames."""
+    """Ultra-fast (~3-5ms) Win32 GDI BitBlt screen ROI grabber (or background PrintWindow on CloudShell)."""
 
-    def __init__(self, left: int, top: int, width: int, height: int) -> None:
+    def __init__(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        *,
+        logical_roi: Optional[Tuple[int, int, int, int]] = None,
+        gw=None,
+    ) -> None:
         self.left = left
         self.top = top
         self.width = width
         self.height = height
+        self._logical_roi = logical_roi
+        self._gw = gw
+
+        cloud_mod = sys.modules.get("azp.cloud")
+        self._cloud = cloud_mod.get_active_cloud_backend() if cloud_mod is not None else None
+        if self._cloud is not None:
+            self._hdesktop = None
+            self._desktop_dc = None
+            self._img_dc = None
+            self._mem_dc = None
+            self._bmp = None
+            return
+
         self._hdesktop = win32gui.GetDesktopWindow()
         self._desktop_dc = win32gui.GetWindowDC(self._hdesktop)
         self._img_dc = win32ui.CreateDCFromHandle(self._desktop_dc)
@@ -34,6 +57,18 @@ class FastROIGrabber:
         self._mem_dc.SelectObject(self._bmp)
 
     def grab_rgb(self) -> np.ndarray:
+        if self._cloud is not None:
+            img = self._cloud.capture(gw=self._gw)
+            arr = vision._norm_arr(img)
+            if self._logical_roi is not None:
+                x1, y1, x2, y2 = self._logical_roi
+            else:
+                gw = self._gw or self._cloud.find_window()
+                x1 = max(0, self.left - gw.client_rect[0])
+                y1 = max(0, self.top - gw.client_rect[1])
+                x2 = min(1920, x1 + self.width)
+                y2 = min(1080, y1 + self.height)
+            return arr[y1:y2, x1:x2]
         self._mem_dc.BitBlt(
             (0, 0), (self.width, self.height), self._img_dc, (self.left, self.top), win32con.SRCCOPY
         )
@@ -43,6 +78,8 @@ class FastROIGrabber:
         return arr[:, :, 2::-1]
 
     def close(self) -> None:
+        if self._cloud is not None:
+            return
         try:
             self._mem_dc.DeleteDC()
             self._img_dc.DeleteDC()
@@ -87,7 +124,7 @@ def solve_zuzanka_ladder(
     x1, y1, x2, y2 = 420, 70, 1500, 330
     drops: List[Dict[str, object]] = []
 
-    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
+    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1, logical_roi=(x1, y1, x2, y2), gw=gw) as grabber:
         for drop_idx in range(1, max_drops + 1):
             full = capture_client(gw=gw)
             hud = vision.check_hud_state(full)
@@ -196,7 +233,7 @@ def solve_mount_race(
     next_dash = t0 + 1.2
     next_hud_chk = t0 + 2.5
 
-    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
+    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1, logical_roi=(x1, y1, x2, y2), gw=gw) as grabber:
         ctl.key_down("w")
         if sprint:
             time.sleep(0.04)
@@ -276,7 +313,7 @@ def solve_cabbage_run(
     next_hop = t0 + 0.9
     next_boost = t0 + 1.4
 
-    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1) as grabber:
+    with FastROIGrabber(l + x1, t + y1, x2 - x1, y2 - y1, logical_roi=(x1, y1, x2, y2), gw=gw) as grabber:
         ctl.key_down("w")
         try:
             while time.time() - t0 < max_sec:

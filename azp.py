@@ -4,17 +4,59 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
 from PIL import Image
 
-from azp import actions, bg_play, coop, detector, gamepad, input_ctl as ctl, minigames, mumu, nav, navmesh, ocr_tpl, vision
+from azp import actions, bg_play, cloud, coop, detector, gamepad, input_ctl as ctl, minigames, mumu, nav, navmesh, ocr_tpl, vision
 from azp.win import capture_background, capture_client, check_input_privilege, find_game_window, focus_game, is_focused, user_idle_seconds
 
 
 def _is_mumu(args: argparse.Namespace) -> bool:
     return getattr(args, "backend", "pc") == "mumu"
+
+
+def _is_cloud(args: argparse.Namespace) -> bool:
+    return getattr(args, "backend", "pc") == "cloud"
+
+
+def _build_cloud_config(args: argparse.Namespace) -> cloud.CloudConfig:
+    def _pick(sub_attr: str, global_attr: str):
+        val = getattr(args, sub_attr, None)
+        if val is not None and val is not False:
+            return val
+        return getattr(args, global_attr, None)
+
+    inject_list = list(getattr(args, "cloud_inject", None) or [])
+    sub_inject = getattr(args, "inject", None) or []
+    inject_list.extend(sub_inject)
+
+    overrides = {
+        "exe": _pick("exe", "cloud_exe"),
+        "url": _pick("url", "cloud_url"),
+        "width": _pick("width", "cloud_width"),
+        "height": _pick("height", "cloud_height"),
+        "title": _pick("title", "cloud_title"),
+        "user_data_dir": _pick("user_data", "cloud_user_data"),
+        "log_file": _pick("log_file", "cloud_log_file"),
+        "debug_port": _pick("debug_port", "cloud_debug_port"),
+        "camera_scale": getattr(args, "cloud_camera_scale", None),
+    }
+    if getattr(args, "devtools", False) or getattr(args, "cloud_devtools", False):
+        overrides["devtools"] = True
+    if getattr(args, "disable_webgl2", False) or getattr(args, "cloud_disable_webgl2", False):
+        overrides["disable_webgl2"] = True
+    if getattr(args, "cloud_auto_launch", False):
+        overrides["auto_launch"] = True
+    if inject_list:
+        overrides["inject"] = tuple(inject_list)
+    return cloud.CloudConfig.from_env(**overrides)
+
+
+def _open_cloud(args: argparse.Namespace) -> cloud.CloudBackend:
+    return cloud.CloudBackend(_build_cloud_config(args))
 
 
 def _open_mumu(args: argparse.Namespace) -> mumu.MumuExtras:
@@ -31,30 +73,34 @@ def cmd_status(args: argparse.Namespace) -> None:
         cmd_mumu_status(args)
         return
     gw = find_game_window()
+    t0 = time.perf_counter()
     img = capture_client(gw=gw)
+    cap_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     hud = vision.check_hud_state(img)
     mm = vision.analyze_minimap(img)
     priv = check_input_privilege(gw)
     dots = vision.detect_red_dots(img)
-    print(
-        json.dumps(
-            {
-                "hwnd": gw.hwnd,
-                "pid": gw.pid,
-                "title": gw.title,
-                "focused": is_focused(gw),
-                "client_rect": gw.client_rect,
-                "size": [gw.width, gw.height],
-                "privilege": priv,
-                "hud": hud,
-                "in_home_ranch": coop.is_home_ranch(img),
-                "minimap": mm,
-                "red_dots": dots,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    payload = {
+        "backend": getattr(args, "backend", "pc"),
+        "hwnd": gw.hwnd,
+        "pid": gw.pid,
+        "title": gw.title,
+        "focused": is_focused(gw),
+        "client_rect": gw.client_rect,
+        "size": [gw.width, gw.height],
+        "capture_ms": cap_ms,
+        "privilege": priv,
+        "hud": hud,
+        "in_home_ranch": coop.is_home_ranch(img),
+        "minimap": mm,
+        "red_dots": dots,
+    }
+    if _is_cloud(args):
+        cb = cloud.get_active_cloud_backend()
+        if cb is not None:
+            payload["url"] = cb.config.url
+            payload["exe"] = cb.config.resolve_exe()
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def cmd_focus(args: argparse.Namespace) -> None:
@@ -81,7 +127,97 @@ def cmd_key(args: argparse.Namespace) -> None:
     focus_game()
     for i in range(args.repeat):
         ctl.tap(args.key, hold=args.hold, after=args.interval if i + 1 < args.repeat else 0.05)
-    print(json.dumps({"ok": True, "key": args.key, "repeat": args.repeat}))
+    print(json.dumps({"ok": True, "backend": args.backend, "key": args.key, "repeat": args.repeat}))
+
+
+def cmd_hold(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            try:
+                for k in args.keys:
+                    mm.key_down(k)
+                time.sleep(max(0.0, args.sec))
+            finally:
+                for k in reversed(args.keys):
+                    mm.key_up(k)
+        print(json.dumps({"ok": True, "backend": "mumu", "keys": args.keys, "sec": args.sec}))
+        return
+    focus_game()
+    ctl.hold_keys(args.keys, args.sec)
+    print(json.dumps({"ok": True, "backend": args.backend, "keys": args.keys, "sec": args.sec}))
+
+
+def cmd_type(args: argparse.Namespace) -> None:
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.input_text(args.text)
+            print(json.dumps({"ok": ok, "backend": "mumu", "length": len(args.text)}))
+        return
+    focus_game()
+    ctl.type_text(args.text, char_delay=args.char_delay)
+    print(json.dumps({"ok": True, "backend": args.backend, "length": len(args.text)}))
+
+
+def _match_ocr_text(img: Image.Image, query: str, roi=None, min_score: float = 0.48, exact: bool = False):
+    res = ocr_tpl.ocr_roi(img, roi=roi, min_score=min_score)
+    q = query.strip().lower()
+    matches = []
+    for item in res["items"]:
+        txt = str(item["text"]).strip()
+        low = txt.lower()
+        if (low == q) if exact else (q in low):
+            matches.append(item)
+    return res, matches
+
+
+def cmd_find(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    roi = tuple(args.roi) if args.roi else None
+    res, matches = _match_ocr_text(img, args.text, roi=roi, min_score=args.min_score, exact=args.exact)
+    print(
+        json.dumps(
+            {
+                "ok": len(matches) > 0,
+                "query": args.text,
+                "count": len(matches),
+                "matches": matches,
+                "elapsed_ms": res["elapsed_ms"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_click_text(args: argparse.Namespace) -> None:
+    img = _load_frame_or_capture(args)
+    roi = tuple(args.roi) if args.roi else None
+    res, matches = _match_ocr_text(img, args.text, roi=roi, min_score=args.min_score, exact=args.exact)
+    if not matches or args.index >= len(matches):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "query": args.text,
+                    "count": len(matches),
+                    "matches": matches,
+                    "elapsed_ms": res["elapsed_ms"],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    target = matches[args.index]
+    cx, cy = float(target["center"][0]), float(target["center"][1])
+    if _is_mumu(args):
+        with _open_mumu(args) as mm:
+            ok = mm.tap(cx, cy, hold=args.hold, repeat=args.clicks)
+        print(json.dumps({"ok": ok, "backend": "mumu", "matched": target, "clicked": [cx, cy]}, ensure_ascii=False, indent=2))
+        return
+    gw = focus_game()
+    ctl.mouse_click_client(cx, cy, button=args.button, clicks=args.clicks, hold=args.hold, gw=gw)
+    print(json.dumps({"ok": True, "backend": args.backend, "matched": target, "clicked": [cx, cy]}, ensure_ascii=False, indent=2))
 
 
 def cmd_click(args: argparse.Namespace) -> None:
@@ -452,8 +588,88 @@ def cmd_bg_snap(args: argparse.Namespace) -> None:
             print(json.dumps({"backend": "mumu", "saved": args.out, "size": list(img.size), "display_id": mm.get_display_id(), "capture_ms": ms}))
         return
     gw = find_game_window()
+    t0 = time.perf_counter()
     img = capture_background(gw=gw, scale=args.scale, save_path=args.out)
-    print(json.dumps({"saved": args.out, "size": list(img.size), "focused": is_focused(gw), "idle_sec": user_idle_seconds()}))
+    ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    print(
+        json.dumps(
+            {
+                "backend": getattr(args, "backend", "pc"),
+                "saved": args.out,
+                "size": list(img.size),
+                "focused": is_focused(gw),
+                "capture_ms": ms,
+                "idle_sec": user_idle_seconds(),
+            }
+        )
+    )
+
+
+def cmd_cloud(args: argparse.Namespace) -> None:
+    action = args.cloud_cmd
+    if action == "build":
+        build_script = os.path.join(cloud.ROOT_DIR, "CloudShell", "build.py")
+        if not os.path.isfile(build_script):
+            raise SystemExit(f"CloudShell build script not found: {build_script}")
+        cmd = [sys.executable, build_script]
+        if getattr(args, "arch", None):
+            cmd.extend(["--arch", args.arch])
+        if getattr(args, "debug", False):
+            cmd.extend(["--config", "Debug"])
+        elif getattr(args, "config", None):
+            cmd.extend(["--config", args.config])
+        if getattr(args, "webview2_sdk_dir", None):
+            cmd.extend(["--webview2-sdk-dir", args.webview2_sdk_dir])
+        if getattr(args, "clean", False):
+            cmd.append("--clean")
+        if getattr(args, "extra", None):
+            cmd.extend(args.extra)
+        proc = subprocess.run(cmd, cwd=cloud.ROOT_DIR)
+        if proc.returncode != 0:
+            raise SystemExit(proc.returncode)
+        exe = cloud.find_cloud_exe(explicit_path=getattr(args, "cloud_exe", None))
+        print(json.dumps({"ok": True, "action": "build", "exe": exe, "exe_exists": bool(exe)}, ensure_ascii=False, indent=2))
+        return
+
+    cb = _open_cloud(args)
+    if action == "launch":
+        gw = cb.launch(wait_timeout=args.wait, reuse_existing=not args.no_reuse)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "action": "launch",
+                    "hwnd": gw.hwnd,
+                    "pid": gw.pid,
+                    "title": gw.title,
+                    "size": [gw.width, gw.height],
+                    "client_rect": list(gw.client_rect),
+                    "url": cb.config.url,
+                    "exe": cb.config.resolve_exe(),
+                    "user_data_dir": os.path.abspath(str(cb.config.user_data_dir)),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    if action == "close":
+        res = cb.close(timeout=args.timeout)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return
+
+    # action == "status"
+    info = cb.info()
+    if info.get("running"):
+        gw = cb.find_window(auto_launch=False)
+        img = cb.capture(gw=gw)
+        info["focused"] = is_focused(gw)
+        info["hud"] = vision.check_hud_state(img)
+        info["in_home_ranch"] = coop.is_home_ranch(img)
+        info["minimap"] = vision.analyze_minimap(img)
+        info["red_dots"] = vision.detect_red_dots(img)
+    print(json.dumps(info, ensure_ascii=False, indent=2))
 
 
 def cmd_mumu_list(args: argparse.Namespace) -> None:
@@ -760,12 +976,35 @@ def cmd_yolo_prelabel(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     env_idx = os.environ.get("AZP_MUMU_INDEX")
-    p = argparse.ArgumentParser(prog="azp", description="AzurPromilia (蓝色星原) Open-World Automation CLI (PC & MuMu)")
-    p.add_argument("--backend", choices=["pc", "mumu"], default=os.environ.get("AZP_BACKEND", "pc"), help="Execution backend: pc (Windows client) or mumu (MuMu IPC)")
+    env_backend = cloud.normalize_backend_name(os.environ.get("AZP_BACKEND", "pc"))
+    p = argparse.ArgumentParser(
+        prog="azp",
+        description="AzurPromilia (蓝色星原) Open-World Automation CLI (PC, MuMu & Built-in CloudShell)",
+    )
+    p.add_argument(
+        "--backend",
+        type=cloud.normalize_backend_name,
+        choices=["pc", "mumu", "cloud"],
+        default=env_backend,
+        help="Execution backend: pc (Windows client), mumu (MuMu IPC), or cloud (built-in WebView2 CloudShell; aliases: cloud_web, cloudweb)",
+    )
     p.add_argument("--mumu-path", default=os.environ.get("AZP_MUMU_PATH"), help="MuMu installation root (auto-detected if omitted)")
     p.add_argument("--mumu-index", type=int, default=int(env_idx) if env_idx and env_idx.isdigit() else None, help="MuMu instance index (auto-detects com.manjuu.promilia if omitted)")
     p.add_argument("--mumu-addr", default=os.environ.get("AZP_MUMU_ADDR"), help="Optional MuMu ADB address (e.g. 127.0.0.1:16384 or emulator-5554)")
     p.add_argument("--mumu-pkg", default=os.environ.get("AZP_MUMU_PKG", mumu.DEFAULT_PACKAGE), help="Target Android package for MuMu display binding")
+    p.add_argument("--cloud-exe", default=None, help="Path to azp-cloud.exe (auto-detected or AZP_CLOUD_EXE)")
+    p.add_argument("--cloud-url", default=None, help="Cloud game URL or preset (manjuu, manjuu-alt, 163, or http(s)://...)")
+    p.add_argument("--cloud-width", type=int, default=None, help="CloudShell physical client width (default 1280)")
+    p.add_argument("--cloud-height", type=int, default=None, help="CloudShell physical client height (default 720)")
+    p.add_argument("--cloud-title", default=None, help="CloudShell window title (default AZP CloudShell)")
+    p.add_argument("--cloud-user-data", default=None, help="CloudShell WebView2 user-data directory")
+    p.add_argument("--cloud-log-file", default=None, help="CloudShell log file path")
+    p.add_argument("--cloud-devtools", action="store_true", help="Open WebView2 DevTools when launching CloudShell")
+    p.add_argument("--cloud-debug-port", type=int, default=None, help="Enable WebView2 remote debugging port")
+    p.add_argument("--cloud-disable-webgl2", action="store_true", help="Disable WebGL2 inside CloudShell (optional compatibility switch)")
+    p.add_argument("--cloud-inject", action="append", default=None, help="Repeatable JS file injected into CloudShell on document creation")
+    p.add_argument("--cloud-auto-launch", action="store_true", help="Automatically launch azp-cloud.exe if window is not running")
+    p.add_argument("--cloud-camera-scale", type=float, default=None, help="Multiplier for relative 3D camera movement in cloud mode (default 1.0)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("status", help="Inspect game window, focus, HUD state, and minimap")
@@ -782,12 +1021,42 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--grid-step", type=int, default=160)
     s.set_defaults(func=cmd_snap)
 
-    s = sub.add_parser("key", help="Tap a hardware scan-code key")
+    s = sub.add_parser("key", help="Tap a hardware scan-code / CloudShell VK key")
     s.add_argument("key")
     s.add_argument("--hold", type=float, default=0.06)
     s.add_argument("--repeat", type=int, default=1)
     s.add_argument("--interval", type=float, default=0.12)
     s.set_defaults(func=cmd_key)
+
+    s = sub.add_parser("hold", help="Hold one or more keys simultaneously for a duration")
+    s.add_argument("keys", nargs="+", help="One or more keys to hold (e.g. w shift)")
+    s.add_argument("--sec", type=float, default=1.0)
+    s.set_defaults(func=cmd_hold)
+
+    s = sub.add_parser("type", help="Type text into active backend (WM_CHAR on CloudShell, Unicode SendInput on PC, IPC on MuMu)")
+    s.add_argument("text")
+    s.add_argument("--char-delay", type=float, default=0.005)
+    s.set_defaults(func=cmd_type)
+
+    s = sub.add_parser("find", help="Find text on screen via RapidOCR and return 1920x1080 boxes/centers")
+    s.add_argument("text", help="Substring (or exact text with --exact) to search for")
+    s.add_argument("--frame", default=None, help="Optional offline screenshot path")
+    s.add_argument("--roi", nargs=4, type=int, default=None, metavar=("X1", "Y1", "X2", "Y2"))
+    s.add_argument("--min-score", type=float, default=0.48)
+    s.add_argument("--exact", action="store_true")
+    s.set_defaults(func=cmd_find)
+
+    s = sub.add_parser("click-text", help="Find text via RapidOCR and click its center")
+    s.add_argument("text", help="Substring (or exact text with --exact) to click")
+    s.add_argument("--frame", default=None, help="Optional offline screenshot path")
+    s.add_argument("--roi", nargs=4, type=int, default=None, metavar=("X1", "Y1", "X2", "Y2"))
+    s.add_argument("--min-score", type=float, default=0.48)
+    s.add_argument("--exact", action="store_true")
+    s.add_argument("--index", type=int, default=0, help="Match index to click (default 0)")
+    s.add_argument("--button", default="left", choices=["left", "right", "middle"])
+    s.add_argument("--clicks", type=int, default=1)
+    s.add_argument("--hold", type=float, default=0.05)
+    s.set_defaults(func=cmd_click_text)
 
     s = sub.add_parser("click", help="Click at 1920x1080 client coordinates")
     s.add_argument("x", type=float)
@@ -820,6 +1089,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jump", action="store_true")
     s.add_argument("--spam-f", action="store_true")
     s.set_defaults(func=cmd_move)
+
+    s = sub.add_parser("walk", help="Walk character via WASD (alias of move without sprint)")
+    s.add_argument("--dir", default="w", help="Any combination of w/a/s/d")
+    s.add_argument("--sec", type=float, default=2.0)
+    s.add_argument("--jump", action="store_true")
+    s.add_argument("--spam-f", action="store_true")
+    s.set_defaults(func=cmd_move, sprint=False)
+
+    s = sub.add_parser("run", help="Sprint character via WASD + Shift (alias of move --sprint)")
+    s.add_argument("--dir", default="w", help="Any combination of w/a/s/d")
+    s.add_argument("--sec", type=float, default=2.0)
+    s.add_argument("--jump", action="store_true")
+    s.add_argument("--spam-f", action="store_true")
+    s.set_defaults(func=cmd_move, sprint=True)
 
     s = sub.add_parser("turn", help="Rotate 3D camera via relative mouse movement")
     s.add_argument("--dx", type=int, required=True)
@@ -1176,6 +1459,44 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--snap-dir", default=None)
     s.set_defaults(func=cmd_hunt_pois)
 
+    # Built-in WebView2 CloudShell lifecycle commands
+    sc = sub.add_parser("cloud", help="Manage built-in WebView2 CloudShell (azp-cloud.exe): launch, status, close, build")
+    csub = sc.add_subparsers(dest="cloud_cmd", required=True)
+
+    cl = csub.add_parser("launch", help="Launch azp-cloud.exe detached and wait for Azp.CloudShell window")
+    cl.add_argument("--exe", default=None, help="Explicit path to azp-cloud.exe")
+    cl.add_argument("--url", default=None, help="Cloud URL or preset (manjuu, manjuu-alt, 163, or http(s)://...)")
+    cl.add_argument("--width", type=int, default=None, help="Client width in physical px (default 1280)")
+    cl.add_argument("--height", type=int, default=None, help="Client height in physical px (default 720)")
+    cl.add_argument("--title", default=None, help="Window title (default AZP CloudShell)")
+    cl.add_argument("--user-data", default=None, help="Persistent WebView2 user-data directory")
+    cl.add_argument("--log-file", default=None, help="Log file path")
+    cl.add_argument("--inject", action="append", default=None, help="Repeatable JS file to inject on document created")
+    cl.add_argument("--devtools", action="store_true", help="Open WebView2 DevTools")
+    cl.add_argument("--debug-port", type=int, default=None, help="Remote debugging port")
+    cl.add_argument("--disable-webgl2", action="store_true", help="Disable WebGL2 inside CloudShell")
+    cl.add_argument("--wait", type=float, default=30.0, help="Seconds to wait for window creation")
+    cl.add_argument("--no-reuse", action="store_true", help="Spawn a new instance instead of reusing existing window")
+    cl.set_defaults(func=cmd_cloud)
+
+    cs = csub.add_parser("status", help="Inspect CloudShell executable, running window, capture speed, and HUD state")
+    cs.add_argument("--title", default=None, help="Window title to query")
+    cs.set_defaults(func=cmd_cloud)
+
+    cc = csub.add_parser("close", help="Gracefully close CloudShell via WM_CLOSE (preserving WebView2 login profile)")
+    cc.add_argument("--title", default=None, help="Window title to close")
+    cc.add_argument("--timeout", type=float, default=5.0, help="Seconds to wait before force termination")
+    cc.set_defaults(func=cmd_cloud)
+
+    cb = csub.add_parser("build", help="Compile native C++20 WebView2 CloudShell (CloudShell/dist/azp-cloud.exe)")
+    cb.add_argument("--arch", choices=["x64", "arm64"], default=None, help="Target architecture (default: x64)")
+    cb.add_argument("--config", choices=["RelWithDebInfo", "Debug"], default=None, help="CMake build configuration")
+    cb.add_argument("--webview2-sdk-dir", default=None, help="Optional extracted Microsoft.Web.WebView2 NuGet root")
+    cb.add_argument("--clean", action="store_true", help="Clean build directory before compiling")
+    cb.add_argument("--debug", action="store_true", help="Shorthand for --config Debug")
+    cb.add_argument("extra", nargs=argparse.REMAINDER, help="Extra arguments forwarded to CloudShell/build.py")
+    cb.set_defaults(func=cmd_cloud)
+
     return p
 
 
@@ -1187,7 +1508,14 @@ def main() -> None:
             pass
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    if _is_cloud(args) and args.cmd != "cloud":
+        cloud.set_active_cloud_backend(_open_cloud(args))
+        try:
+            args.func(args)
+        finally:
+            cloud.set_active_cloud_backend(None)
+    else:
+        args.func(args)
 
 
 if __name__ == "__main__":

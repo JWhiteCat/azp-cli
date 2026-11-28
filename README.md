@@ -1,10 +1,12 @@
-# AZP — 蓝色星原：旅谣 大世界探索与自动化 CLI（PC & MuMu 模拟器）
+# AZP — 蓝色星原：旅谣 大世界探索与自动化 CLI（PC / MuMu / 内置云游戏 CloudShell）
 
-针对 1920×1080 窗口化 PC 客户端（`AzurPromilia.exe`）及 **MuMu 模拟器 12 / NX（v5/v6）** 实测沉淀的可复用 Python CLI 与脚本库（纯标准库 + `pywin32` / `PIL` / `numpy` / `scipy` + 轻量 `opencv` / `onnxruntime` / `rapidocr-onnxruntime`，共 65 个子命令，内置 100Hz Win32 `BitBlt` 视觉追踪、`PrintWindow` 后台截屏、`WH_KEYBOARD_LL`/`WH_MOUSE_LL` 物理输入让权监测、`ViGEmBus` 虚拟 Xbox 手柄驱动、**3D 自由飞行与安全迫降（`fly-bearing` / `land`）+ 闭环 POI 自动清扫（`hunt-pois`）**、**2.5D 大地图代价网格 + A\* 寻路 + 在线障碍记忆**、**模板匹配 + RapidOCR 语义感知与异常复苏**、**可选零 PyTorch ONNX YOLO 3D 目标检测插件**，以及参考 MAA / maa-cli 实现的 **MuMu `external_renderer_ipc.dll` 截图增强 + 触控增强**）。
+针对 1920×1080 窗口化 PC 客户端（`AzurPromilia.exe`）、**内置原生 WebView2 云游戏容器（`azp-cloud.exe`，免下载完整客户端、纯后台零抢占前台）** 及 **MuMu 模拟器 12 / NX（v5/v6）** 实测沉淀的可复用 Python CLI 与脚本库（纯标准库 + `pywin32` / `PIL` / `numpy` / `scipy` + 轻量 `opencv` / `onnxruntime` / `rapidocr-onnxruntime`，内置 100Hz Win32 `BitBlt` 视觉追踪、`PrintWindow` 后台截屏、`PostMessageW -> WebView2 CDP` 后台键鼠与 3D 相对视角驱动、`WH_KEYBOARD_LL`/`WH_MOUSE_LL` 物理输入让权监测、`ViGEmBus` 虚拟 Xbox 手柄驱动、**3D 自由飞行与安全迫降（`fly-bearing` / `land`）+ 闭环 POI 自动清扫（`hunt-pois`）**、**2.5D 大地图代价网格 + A\* 寻路 + 在线障碍记忆**、**模板匹配 + RapidOCR 语义感知与异常复苏**、**可选零 PyTorch ONNX YOLO 3D 目标检测插件**，以及参考 MAA / maa-cli 实现的 **MuMu `external_renderer_ipc.dll` 截图增强 + 触控增强**）。
 
 ## 模块结构
 
-- [azp.py](azp.py)：统一命令行入口（65 个子命令，支持 `--backend pc|mumu` 及 `AZP_BACKEND`/`AZP_MUMU_*` 环境变量）
+- [azp.py](azp.py)：统一命令行入口（支持 `--backend pc|mumu|cloud` 及别名 `cloud_web`/`cloudweb`，`AZP_BACKEND`/`AZP_CLOUD_*`/`AZP_MUMU_*` 环境变量，内置 `cloud launch/status/close/build` 生命周期管理）
+- [azp/cloud.py](azp/cloud.py)：内置云游戏后端（面向原生 C++20/WebView2 `CloudShell` 窗口 `Azp.CloudShell`，`PrintWindow` 纯后台截屏、`PostMessageW` 后台键鼠/滚轮/`WM_CHAR` 文本与 `MK_XBUTTON2` 3D 相对视角旋转、`1920×1080` 逻辑坐标自动等比缩放至 `1280×720` 物理客户区、支持 `manjuu` / `manjuu-alt` / `163` 预设或自定义 URL、独立持久化的 `cache/cloud-shell/WebView2` 登录态目录）
+- [CloudShell/](CloudShell/)：原生 Windows C++20 WebView2 云游戏壳（静态 CRT `/MT` + 静态 `WebView2LoaderStatic.lib`，输出单文件 `CloudShell/dist/azp-cloud.exe`，内置反遮挡休眠参数、`InputBridge` 与 `cloud_policy.js` 指针锁定/前台状态桥接）
 - [azp/mumu.py](azp/mumu.py)：MuMu 模拟器后端（参考 MAA `MumuExtras`/`MumuController`/`AdbController`），支持自动发现安装路径、`MuMuManager.exe info -v all` 实例枚举与包名（`com.manjuu.promilia`）display 自动绑定、版本门控（`>= 6.3.2.0`）、**截图增强**（`nemu_capture_display` 纯后台 ~14ms 1920×1080 RGBA 截屏）与**触控增强**（`nemu_input_event_finger_touch_down/up` 多指触控、平滑滑动、虚拟摇杆多指并发、`nemu_input_event_key_down/up` Linux 键码映射、`nemu_input_text` 及 ADB 降级）
 - [azp/win.py](azp/win.py)：PC 端 DPI 感知窗口定位（含 `IsIconic` 最小化窗口自动检测与 `SW_RESTORE` 恢复）、焦点管理、前台/后台 `PrintWindow` 客户区截屏、`user_idle_seconds()` 空闲检测、UIPI 管理员权限预检
 - [azp/input_ctl.py](azp/input_ctl.py)：基于 `SendInput` 硬件扫描码（`KEYEVENTF_SCANCODE`）的键鼠控制器、3D 相对视角旋转、地图拖拽与滚轮缩放
@@ -19,15 +21,34 @@
 - [azp/bg_play.py](azp/bg_play.py)：PC 端 `PrintWindow` + `ViGEmBus` 虚拟手柄后台探测模块（`bg-test` / `bg-explore`）
 - [azp/coop.py](azp/coop.py)：PC 端空闲协作探索模块（`coop-explore`，`PhysicalInputMonitor` 区分物理操作与注入 `SendInput`，人工动键鼠 ~30ms 内松键让权，支持自动退出家园）
 - [tests/test_offline.py](tests/test_offline.py)：基于实机（UID 已打码）截图的离线视觉、导航、家园/弹窗、UID 打码及 MuMu 索引/版本/键码回归测试
+- [tests/test_cloud.py](tests/test_cloud.py)：CloudShell URL 预设、CLI 参数构造、VK/扩展键 `lParam`、`WM_CHAR` UTF-16 代理对、`MK_XBUTTON2` 3D 相对视角分步钳位、`1920×1080 -> 1280×720` 坐标缩放及 `--backend cloud` 全链路离线单元测试
 
 ## 前置权限与环境说明
 
 - **PC 客户端**：`AzurPromilia.exe` 以管理员权限运行；请确保在**管理员权限终端**下运行，可通过 `python azp.py status` 确认 `privilege.can_send_input == true`。
+- **内置云游戏 CloudShell（零抢占前台、无需管理员权限）**：
+  - 依赖 Windows 本机已安装的 Microsoft Edge WebView2 Runtime；构建阶段需要 Visual Studio 2022 C++ / CMake（首次运行 `python azp.py cloud build` 会自动下载并校验 WebView2 NuGet SDK，产物输出至 `CloudShell/dist/azp-cloud.exe`）。
+  - 默认打开官方《云·蓝色星原》网页端（`manjuu` -> `https://azurpromilia.manjuu.com/cloudgame`），也可切换 `--cloud-url manjuu-alt`（`https://azurpromilia.manjuu.com/cloud/`）、`--cloud-url 163`（`https://cg.163.com`）或任意 `http(s)://` 地址；登录 Cookie 与缓存持久化保存在 `cache/cloud-shell/WebView2`。
+  - 所有操作通过 `PrintWindow` 后台截屏与 `PostMessageW -> WebView2 CDP` 投递，窗口被遮挡时依然可完整执行跑图、视角旋转、OCR、解谜与小游戏（逻辑坐标保持 `1920×1080`，自动等比缩放至 `1280×720` 物理客户区）。
 - **MuMu 模拟器（零抢占前台）**：通过 `external_renderer_ipc.dll` 直连渲染器 IPC，无需抢占前台焦点即可实现纯后台截图与多指触控；**触控增强**要求 `MuMuManager.exe version >= 6.3.2.0`（低于该版本自动降级 ADB）。注：实测手游端 `com.manjuu.promilia` 进入世界时可能触发腾讯 ACE 模拟器环境安全风险提示弹窗。
 
 ## 常用命令速查
 
 ```powershell
+# 0. 内置云游戏 CloudShell（纯后台零抢占前台，无需管理员权限）
+python azp.py cloud build                                   # 编译原生 C++20 WebView2 容器 -> CloudShell/dist/azp-cloud.exe
+python azp.py cloud launch                                  # 启动官方《云·蓝色星原》网页端 (默认 1280x720，自动保存登录态)
+python azp.py cloud launch --url 163 --width 1280 --height 720  # 切换网易云游戏或自定义 URL
+python azp.py cloud status                                  # 查看容器进程、截屏耗时、HUD/红点/小地图状态
+python azp.py --backend cloud snap --out snaps/cloud.png    # 纯后台 PrintWindow 截屏
+python azp.py --backend cloud click 960 540                 # 1920x1080 逻辑坐标自动缩放到物理客户区后台点击
+python azp.py --backend cloud turn --dx 360                 # MK_XBUTTON2 协议后台旋转 3D 视角
+python azp.py --backend cloud run --dir w --sec 2.5         # 后台冲刺移动（不抢占桌面焦点/键鼠）
+python azp.py --backend cloud type "hello"                  # WM_CHAR UTF-16 后台文本输入
+python azp.py --backend cloud click-text "开始旅程"          # RapidOCR 找字并后台点击
+python azp.py --backend cloud hunt-pois --steps 6           # 直接复用大世界探索/寻路/领奖/小游戏等全部子命令
+python azp.py cloud close                                   # 优雅关闭窗口（保留 cache/cloud-shell/WebView2 登录态）
+
 # 1. PC 端状态、后台截屏与小地图 POI 侦察
 python azp.py status                                        # 窗口/UIPI权限/HUD/家园/红点/小地图
 python azp.py bg-snap --out snaps/bg.png                    # PrintWindow 后台截屏（不抢前台焦点）

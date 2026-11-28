@@ -5,6 +5,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import os
 import random
+import sys
 import threading
 import time
 from typing import Dict, List, Optional
@@ -188,7 +189,13 @@ def coop_explore(
     with PhysicalInputMonitor() as mon:
         active_session = False
 
+        def _is_cloud_active() -> bool:
+            mod = sys.modules.get("azp.cloud")
+            return bool(mod is not None and mod.get_active_cloud_backend() is not None)
+
         def _should_abort() -> bool:
+            if _is_cloud_active():
+                return mon.is_interrupted()
             return mon.is_interrupted() or not is_focused(gw)
 
         for i in range(steps):

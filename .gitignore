@@ -24,6 +24,12 @@ yolo_dataset/
 models/*.onnx
 models/*.pt
 
+# CloudShell build outputs, WebView2 profile cache & runtime logs
+CloudShell/build/
+CloudShell/dist/
+cache/
+debug/
+
 # OS / IDE
 .DS_Store
 Thumbs.db
