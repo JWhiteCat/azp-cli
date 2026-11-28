@@ -177,7 +177,9 @@ def approach_poi(
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
     # Brief tap forward so character/mount arrow aligns with camera even after S/A/D movement
-    ctl.hold_keys(["w"], 0.24)
+    img_pre = capture_client(gw=gw)
+    flying_pre = bool(vision.check_hud_state(img_pre).get("is_flying"))
+    ctl.hold_keys(["w"], 0.40 if flying_pre else 0.24)
     time.sleep(0.14)
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
@@ -188,8 +190,8 @@ def approach_poi(
     turned_dx = 0
     if heading is not None:
         # Closed-loop yaw alignment: compensates for foot vs mount vs flight camera sensitivity.
-        # Flying mounts have ~2x lower yaw sensitivity (~13 px/deg) and banking inertia (~0.5s W settle),
-        # so give flight up to 3 passes with calibrated gain to lock onto target_bearing within +-5 deg.
+        # Empirically calibrated flight yaw is ~5.8 px/deg (close to foot 6.35 px/deg) with ~0.5s banking inertia,
+        # plus a 180-deg arrow-PCA flip guard on pass 1+ so bright teal/ruin minimaps never reverse direction.
         cur_heading = heading
         max_passes = 3 if flying else 2
         for pass_idx in range(max_passes):
@@ -198,15 +200,16 @@ def approach_poi(
             if abs(delta) <= tol:
                 break
             if flying:
-                gain = 13.5 if pass_idx == 0 else 12.0
+                gain = 5.8 if pass_idx == 0 else 5.5
             else:
-                gain = px_per_deg if pass_idx == 0 else 9.5
+                gain = px_per_deg if pass_idx == 0 else 6.0
             step_dx = int(round(delta * gain))
             if abs(step_dx) <= 25:
                 break
             # Keep per-step delta <= ~38px so Unity Raw Input never drops large single-frame deltas
             actions.turn_camera(step_dx, 0, steps=max(8, abs(step_dx) // 35), step_delay=0.010)
             turned_dx += step_dx
+            expected_h = (cur_heading + (step_dx / gain)) % 360.0
             time.sleep(0.12)
             if pass_idx < max_passes - 1:
                 if abort_fn is not None and abort_fn():
@@ -216,6 +219,10 @@ def approach_poi(
                 h2 = estimate_player_heading(capture_client(gw=gw))
                 if h2 is None:
                     break
+                # Guard against occasional 180-deg arrow-PCA flip on bright teal/ruin minimap backgrounds
+                err_exp = abs((h2 - expected_h + 180.0) % 360.0 - 180.0)
+                if err_exp > 115.0:
+                    h2 = (h2 + 180.0) % 360.0
                 cur_heading = h2
     if abort_fn is not None and abort_fn():
         return {"aborted": True}
@@ -351,8 +358,10 @@ def fly_to_bearing(
 
     remaining = max(0.0, float(fly_sec))
     prev_img = capture_client(gw=gw)
+    hp_start = float(vision.check_hud_state(prev_img).get("hp_bright_ratio", 0.0))
     climbs_unstuck = 0
     aborted = False
+    aborted_hazard = False
     while remaining > 0.05:
         if abort_fn is not None and abort_fn():
             aborted = True
@@ -365,6 +374,12 @@ def fly_to_bearing(
         cur_hud = vision.check_hud_state(cur_img)
         if not cur_hud["in_world_hud"]:
             break
+        cur_hp = float(cur_hud.get("hp_bright_ratio", 0.0))
+        if cur_hud.get("hazard_vignette") or (
+            hp_start > 0.25 and (hp_start - cur_hp) > 0.16 and not cur_hud.get("in_combat")
+        ):
+            aborted_hazard = True
+            break
         mm_diff = vision.frame_diff(prev_img, cur_img, roi=(65, 45, 220, 198))
         prev_img = cur_img
         if mm_diff < 2.5 and remaining > 0.25:
@@ -374,10 +389,11 @@ def fly_to_bearing(
             ctl.hold_keys(["w", "space"], 1.8)
             prev_img = capture_client(gw=gw)
 
-    land_res = safe_land(dismount=True, abort_fn=abort_fn) if (land and not aborted) else None
+    land_res = safe_land(dismount=True, abort_fn=abort_fn) if (land and not aborted and not aborted_hazard) else None
     img_end = capture_client(gw=gw)
     return {
-        "ok": not aborted,
+        "ok": (not aborted) and (not aborted_hazard),
+        "aborted_hazard": aborted_hazard,
         "took_off": took_off,
         "target_bearing": target_bearing,
         "heading_before": align_res.get("heading_before"),
@@ -386,4 +402,230 @@ def fly_to_bearing(
         "landed": land_res,
         "hud_after": vision.check_hud_state(img_end),
         "pois_after": detect_minimap_pois(img_end),
+    }
+
+
+def hunt_pois(
+    steps: int = 12,
+    max_dist: float = 72.0,
+    allow_fly: bool = True,
+    idle_sec: float = 0.0,
+    snap_dir: Optional[str] = None,
+) -> Dict[str, object]:
+    """Autonomous closed-loop minimap POI hunter: approach, cliff-climb via flight, solve puzzles, build facilities, fight & loot.
+
+    When ``idle_sec > 0``, uses ``coop.PhysicalInputMonitor`` to wait until the PC is physically idle
+    and aborts cleanly within ~30ms whenever the user touches keyboard or mouse.
+    """
+    import os
+
+    from . import coop, ocr_tpl
+
+    if snap_dir:
+        os.makedirs(snap_dir, exist_ok=True)
+
+    monitor = coop.PhysicalInputMonitor() if idle_sec > 0 else None
+    if monitor is not None:
+        monitor.start()
+
+    def _should_abort() -> bool:
+        if monitor is None:
+            return False
+        return monitor.physical_idle_seconds() < 0.8
+
+    log: List[Dict[str, object]] = []
+    stats = {
+        "puzzles_solved": 0,
+        "facilities_built": 0,
+        "interacts_looted": 0,
+        "combats_won": 0,
+        "flight_climbs": 0,
+        "recoveries": 0,
+    }
+    stalled_streak = 0
+    last_bearing: Optional[float] = None
+    last_dist: Optional[float] = None
+    skip_f_once = False
+    stop_reason = "completed"
+
+    try:
+        if monitor is not None:
+            t_wait = time.time()
+            while monitor.physical_idle_seconds() < idle_sec:
+                if time.time() - t_wait > max(30.0, idle_sec * 3.0):
+                    return {"ok": False, "stop_reason": "user_active_timeout", "stats": stats, "log": log}
+                time.sleep(0.5)
+
+        gw = focus_game()
+        for step_idx in range(1, max(1, steps) + 1):
+            if _should_abort():
+                stop_reason = "user_takeover"
+                break
+
+            img = capture_client(gw=gw)
+            hud = vision.check_hud_state(img)
+            entry: Dict[str, object] = {"step": step_idx, "hud": hud}
+
+            if hud["loading"]:
+                time.sleep(1.5)
+                entry["action"] = "wait_loading"
+                log.append(entry)
+                continue
+
+            if hud.get("hazard_vignette"):
+                entry["action"] = "hazard_abort"
+                log.append(entry)
+                stop_reason = "hazard_vignette"
+                break
+
+            if not hud["in_world_hud"]:
+                rec = ocr_tpl.recover_anomaly(auto_confirm_repair=True)
+                stats["recoveries"] += 1
+                entry["action"] = "recover"
+                entry["result"] = rec
+                if rec.get("executed") in ("closed_build_panel", "built_and_closed", "cancelled_dialog"):
+                    skip_f_once = True
+                if not vision.check_hud_state(capture_client(gw=gw))["in_world_hud"]:
+                    actions.dismiss_reward(clicks=2)
+                    ctl.tap("esc", hold=0.06, after=0.5)
+                log.append(entry)
+                continue
+
+            if hud["in_combat"]:
+                res = actions.combat_burst(duration=14.0, switch_chars=True, abort_fn=_should_abort)
+                stats["combats_won"] += 1
+                entry["action"] = "combat"
+                entry["result"] = res
+                log.append(entry)
+                stalled_streak = 0
+                if snap_dir:
+                    capture_client(gw=gw).save(os.path.join(snap_dir, f"hunt_{step_idx:02d}_combat.png"))
+                continue
+
+            if hud["near_kibo_puzzle"]:
+                # Fast path: single Q solves auto-matched glowing puzzles in ~2.8s
+                ctl.tap("q", hold=0.06, after=2.8)
+                hud_q = vision.check_hud_state(capture_client(gw=gw))
+                if hud_q["in_world_hud"] and hud_q["near_kibo_puzzle"]:
+                    puz_res = solve_puzzle_auto(elements=("fire", "grass", "light", "water", "earth", "ice", "thunder"))
+                    solved = bool(puz_res.get("ok"))
+                else:
+                    puz_res = {"ok": True, "solved_by": "quick_q"}
+                    solved = True
+                actions.interact_spam(taps=6, interval=0.18)
+                actions.dismiss_reward(clicks=2)
+                if solved:
+                    stats["puzzles_solved"] += 1
+                entry["action"] = "solve_puzzle"
+                entry["result"] = puz_res
+                log.append(entry)
+                stalled_streak = 0
+                if snap_dir:
+                    capture_client(gw=gw).save(os.path.join(snap_dir, f"hunt_{step_idx:02d}_puzzle.png"))
+                continue
+
+            if hud["has_interact_f"] and not skip_f_once:
+                f_info = ocr_tpl.read_interact_prompt(img)
+                cat = str(f_info.get("category", "unknown"))
+                if cat == "built_facility":
+                    # Already-built Booster Facility or teardown prompt: do not re-open modal, walk to next POI instead
+                    skip_f_once = True
+                elif cat == "facility":
+                    f_res = actions.build_booster_facility()
+                    if f_res.get("ok"):
+                        stats["facilities_built"] += 1
+                    skip_f_once = True
+                    entry["action"] = "build_facility"
+                    entry["result"] = f_res
+                    log.append(entry)
+                    stalled_streak = 0
+                    if snap_dir:
+                        capture_client(gw=gw).save(os.path.join(snap_dir, f"hunt_{step_idx:02d}_{cat}.png"))
+                    continue
+                else:
+                    actions.interact_spam(taps=6, interval=0.18)
+                    actions.dismiss_reward(clicks=2)
+                    stats["interacts_looted"] += 1
+                    entry["action"] = f"interact_{cat}"
+                    entry["prompt"] = f_info.get("primary")
+                    log.append(entry)
+                    stalled_streak = 0
+                    if snap_dir:
+                        capture_client(gw=gw).save(os.path.join(snap_dir, f"hunt_{step_idx:02d}_{cat}.png"))
+                    continue
+
+            pois = [p for p in detect_minimap_pois(img) if (not p["completed"]) and float(p["dist_px"]) <= max_dist]
+            if not pois:
+                stop_reason = "no_more_pois"
+                break
+
+            target = pois[0]
+            bearing = float(target["bearing_deg"])
+            dist_px = float(target["dist_px"])
+            entry["target_poi"] = target
+
+            same_dir = last_bearing is not None and abs(((bearing - last_bearing + 180.0) % 360.0) - 180.0) < 35.0
+            if same_dir and last_dist is not None and (last_dist - dist_px) < 6.0:
+                stalled_streak += 1
+            elif not same_dir:
+                stalled_streak = 0
+
+            if stalled_streak >= 3:
+                entry["action"] = "skip_unreachable_poi"
+                log.append(entry)
+                stop_reason = "poi_unreachable"
+                break
+
+            if stalled_streak >= 1 and allow_fly and dist_px >= 28.0:
+                # Escalate over cliff/rock obstruction via step-back + W+Space 3D flight (skip if already right next to POI)
+                back_deg = (bearing + 180.0) % 360.0
+                approach_poi(target_bearing=back_deg, walk_sec=0.85, sprint=False, spam_f=False, unstuck=False, abort_fn=_should_abort)
+                fly_sec = min(2.2, max(0.6, dist_px / 28.0))
+                f_res = fly_to_bearing(
+                    target_bearing=bearing,
+                    fly_sec=fly_sec,
+                    climb_sec=3.8,
+                    boost=False,
+                    land=True,
+                    abort_fn=_should_abort,
+                )
+                stats["flight_climbs"] += 1
+                entry["action"] = "fly_climb_poi"
+                entry["result"] = {"ok": f_res.get("ok"), "aborted_hazard": f_res.get("aborted_hazard")}
+                if f_res.get("aborted_hazard"):
+                    log.append(entry)
+                    stop_reason = "hazard_vignette"
+                    break
+            else:
+                walk_sec = min(3.0, max(0.7, dist_px / 18.0))
+                a_res = approach_poi(
+                    target_bearing=bearing,
+                    walk_sec=walk_sec,
+                    sprint=(dist_px > 26.0),
+                    spam_f=not skip_f_once,
+                    unstuck=True,
+                    abort_fn=_should_abort,
+                )
+                skip_f_once = False
+                entry["action"] = "walk_to_poi"
+                entry["unstuck_count"] = a_res.get("unstuck_count", 0)
+                if a_res.get("aborted"):
+                    log.append(entry)
+                    stop_reason = "user_takeover"
+                    break
+
+            last_bearing = bearing
+            last_dist = dist_px
+            log.append(entry)
+    finally:
+        ctl.release_movement_keys()
+        if monitor is not None:
+            monitor.stop()
+
+    return {
+        "ok": stop_reason in ("completed", "no_more_pois"),
+        "stop_reason": stop_reason,
+        "steps_run": len(log),
+        "stats": stats,
+        "log": log,
     }

@@ -463,7 +463,7 @@ def build_booster_facility(wait_after: float = 4.2) -> Dict[str, object]:
     img = capture_client(gw=gw)
     hud = vision.check_hud_state(img)
     if hud["in_world_hud"]:
-        ctl.tap("f", hold=0.06, after=0.85)
+        ctl.tap("f", hold=0.06, after=1.15)
         img = capture_client(gw=gw)
         hud = vision.check_hud_state(img)
 

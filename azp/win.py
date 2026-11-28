@@ -51,6 +51,7 @@ class GameWindow:
 
 def find_game_window(title_substr: str = "AzurPromilia", class_name: str = "UnityWndClass") -> GameWindow:
     matches = []
+    iconic_matches = []
 
     def _cb(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
@@ -73,11 +74,23 @@ def find_game_window(title_substr: str = "AzurPromilia", class_name: str = "Unit
                         client_rect=(p0[0], p0[1], p1[0], p1[1]),
                     )
                 )
+            elif win32gui.IsIconic(hwnd):
+                iconic_matches.append(
+                    GameWindow(
+                        hwnd=hwnd,
+                        pid=pid,
+                        title=title,
+                        window_rect=wrect,
+                        client_rect=(0, 0, 0, 0),
+                    )
+                )
 
     win32gui.EnumWindows(_cb, None)
-    if not matches:
-        raise RuntimeError(f"Game window not found (title~={title_substr!r}, class={class_name!r}).")
-    return matches[0]
+    if matches:
+        return matches[0]
+    if iconic_matches:
+        return iconic_matches[0]
+    raise RuntimeError(f"Game window not found (title~={title_substr!r}, class={class_name!r}).")
 
 
 def is_admin() -> bool:
@@ -161,9 +174,10 @@ def capture_background(
 
 def focus_game(gw: Optional[GameWindow] = None, wait: float = 0.2) -> GameWindow:
     gw = gw or find_game_window()
-    if win32gui.IsIconic(gw.hwnd):
+    if win32gui.IsIconic(gw.hwnd) or gw.width < 100 or gw.height < 100:
         win32gui.ShowWindow(gw.hwnd, win32con.SW_RESTORE)
-        time.sleep(0.2)
+        time.sleep(0.35)
+        gw = find_game_window()
     if win32gui.GetForegroundWindow() != gw.hwnd:
         # Press/release Alt briefly to satisfy Windows foreground lock if needed
         ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)

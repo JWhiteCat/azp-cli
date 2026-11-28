@@ -224,7 +224,7 @@ def _classify_interact_text(text: str) -> str:
     t = text.strip()
     if any(k in t for k in ("宝箱", "秘藏", "箱")):
         return "chest"
-    if any(k in t for k in ("修复", "建造", "增效", "祭坛", "矿场")):
+    if any(k in t for k in ("修复", "建造", "增效")):
         return "facility"
     if any(k in t for k in ("星脉", "节点", "激活", "锚点")):
         return "star_vein"
@@ -234,6 +234,11 @@ def _classify_interact_text(text: str) -> str:
         return "collectible"
     if any(k in t for k in ("交谈", "对话", "商店", "购买")):
         return "npc"
+    if any(
+        k in t
+        for k in ("元素祭坛", "祭坛", "坛", "采集小屋", "星辉矿场", "伐木场", "采石场", "林果园", "矿场", "仓库", "拆除", "牧场")
+    ):
+        return "built_facility"
     if t:
         return "gather"
     return "unknown"

@@ -68,8 +68,45 @@ def run_tests() -> None:
     # Right-hand [Ctrl] white keycap pill for 降低高度 (x=1812..1864, y=591..619)
     fdr.rectangle([1816, 594, 1860, 616], fill=(242, 245, 248))
     st_fly = vision.check_hud_state(fly_hud)
-    assert st_fly["in_world_hud"] is True and st_fly["is_flying"] is True, st_fly
-    assert st_world["is_flying"] is False, st_world
+    assert st_fly["in_world_hud"] is True and st_fly["is_flying"] is True and st_fly["hazard_vignette"] is False, st_fly
+    assert st_world["is_flying"] is False and st_world["hazard_vignette"] is False, st_world
+
+    # 2d. Subtitle-proof bounded is_flying: NPC subtitles hide [Ctrl] pill, but "Space"+"Shift" captions stay in [0.055..0.145]/[0.045..0.135].
+    # Meanwhile bright sunlit grass/flowers (>0.145 white ratio) behind bottom-right ground buttons must NOT false-trigger is_flying.
+    sub_fly = fly_hud.copy()
+    sdr = ImageDraw.Draw(sub_fly)
+    # Erase [Ctrl] pill as if hidden by NPC subtitle
+    sdr.rectangle([1810, 588, 1868, 622], fill=(95, 140, 185))
+    # Draw dark bottom-right background + ~7.5% white "Space" text & ~6.2% white "Shift" text
+    sdr.rectangle([1715, 1028, 1885, 1056], fill=(32, 42, 52))
+    sdr.rectangle([1732, 1038, 1772, 1041], fill=(235, 240, 245))  # 40*3 / (68*24) = 0.0735
+    sdr.rectangle([1828, 1038, 1862, 1041], fill=(235, 240, 245))  # 34*3 / (68*24) = 0.0625
+    st_sub_fly = vision.check_hud_state(sub_fly)
+    assert st_sub_fly["in_world_hud"] is True and st_sub_fly["is_flying"] is True, st_sub_fly
+
+    sunlit_ground = sub_fly.copy()
+    gdr = ImageDraw.Draw(sunlit_ground)
+    # Flood bottom-right button caption area with bright sunlit grass/white flowers (ratio >> 0.145)
+    gdr.rectangle([1718, 1030, 1882, 1054], fill=(235, 240, 238))
+    st_sunlit = vision.check_hud_state(sunlit_ground)
+    assert st_sunlit["in_world_hud"] is True and st_sunlit["is_flying"] is False, st_sunlit
+
+    # 2e. Environmental DoT hazard detection (HP bar crimson damage chunk while not in combat, e.g. 迹影崖谷 -389 HP/s)
+    haz_hud = fly_hud.copy()
+    hdr = ImageDraw.Draw(haz_hud)
+    hdr.rectangle([920, 996, 1020, 1006], fill=(215, 50, 55))
+    st_haz = vision.check_hud_state(haz_hud)
+    assert st_haz["in_world_hud"] is True and st_haz["hazard_vignette"] is True, st_haz
+
+    # 2f. [F] prompt classification: locked facilities ("建造"/"修复") vs already-built facilities ("元素祭坛"/"采集小屋"/"星辉矿场"/"伐木场")
+    assert ocr_tpl._classify_interact_text("建造") == "facility"
+    assert ocr_tpl._classify_interact_text("修复增效设施") == "facility"
+    assert ocr_tpl._classify_interact_text("元素祭坛") == "built_facility"
+    assert ocr_tpl._classify_interact_text("元素察坛") == "built_facility"
+    assert ocr_tpl._classify_interact_text("星辉矿场") == "built_facility"
+    assert ocr_tpl._classify_interact_text("缘岩山地采集小屋") == "built_facility"
+    assert ocr_tpl._classify_interact_text("伐木场") == "built_facility"
+    assert ocr_tpl._classify_interact_text("风铜矿") == "gather"
 
     # 3. [F] interact pill detection on real mining prompt
     has_f, ratio = vision.detect_interact_prompt(_load("back_world.png"))

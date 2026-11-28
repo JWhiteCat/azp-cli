@@ -324,6 +324,17 @@ def cmd_land(args: argparse.Namespace) -> None:
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+def cmd_hunt_pois(args: argparse.Namespace) -> None:
+    res = nav.hunt_pois(
+        steps=args.steps,
+        max_dist=args.max_dist,
+        allow_fly=not args.no_fly,
+        idle_sec=args.idle_sec,
+        snap_dir=args.snap_dir,
+    )
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
 def cmd_nav_bake(args: argparse.Namespace) -> None:
     im = Image.open(args.map)
     cmap = navmesh.CostMap25D.bake_from_image(
@@ -1156,6 +1167,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dataset", default=detector.DEFAULT_DATASET_DIR)
     s.add_argument("--min-score", type=float, default=0.76)
     s.set_defaults(func=cmd_yolo_prelabel)
+
+    s = sub.add_parser("hunt-pois", help="Autonomous closed-loop minimap POI hunter (approach, flight climb, puzzle, facility, combat)")
+    s.add_argument("--steps", type=int, default=12)
+    s.add_argument("--max-dist", type=float, default=72.0)
+    s.add_argument("--no-fly", action="store_true", help="Disable automatic 3D flight escalation when blocked by cliffs")
+    s.add_argument("--idle-sec", type=float, default=0.0, help="When >0, wait for user physical idle and yield within ~30ms on takeover")
+    s.add_argument("--snap-dir", default=None)
+    s.set_defaults(func=cmd_hunt_pois)
 
     return p
 

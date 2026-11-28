@@ -27,7 +27,7 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 ## Low-Level Controls
 | Command | Module | Purpose |
 | --- | --- | --- |
-| `python azp.py focus` | `win` | Restore & bring `AzurPromilia` to foreground |
+| `python azp.py focus` | `win` | Auto-restore minimized (`IsIconic`) `AzurPromilia` window and bring to foreground |
 | `python azp.py key <key> [--hold 0.06] [--repeat 1]` | `input_ctl` | Hardware scan-code key press |
 | `python azp.py click <x> <y> [--button left] [--alt]` | `input_ctl` | Click 1920×1080 client coordinates |
 | `python azp.py drag <x1> <y1> <x2> <y2> [--duration 0.35]` | `input_ctl` | Drag between client coordinates (e.g., world map panning) |
@@ -42,9 +42,10 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | `python azp.py exit-home [--timeout 25]` | `actions` | Exit Home Ranch (`星临者的家园`) via `H` → `确认 (1245, 660)` and wait for open-world HUD |
 | `python azp.py home-harvest [--stay] [--timeout 25]` | `actions` | Enter Home Ranch (`H`), one-click harvest `建筑管理 → 一键收取` (`尘石`/矿/木/结晶), and return to open world |
 | `python azp.py interact [--taps 5] [--interval 0.18]` | `actions` | Rapid `F` tapping for chests, teleporters, pickups |
-| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector, 2-pass ground / 3-pass flight closed-loop yaw) and sprint forward with minimap-diff unstuck |
-| `python azp.py fly-bearing <deg> [--sec 2.4] [--climb 2.5] [--no-boost] [--land]` | `nav` | 3D flight navigation: auto-summons flying mount (`T`, retries after step-back if blocked by overhang), 3-pass flight yaw alignment (`13.5/12.0 px/deg`), `W+Space` diagonal climb (never presses `S`), cruise + cliff climb unstuck, optional `safe_land()` |
-| `python azp.py land [--max-sec 6.5] [--stay-mounted]` | `nav` | Safe zero-fall-damage landing: pulses `Ctrl` until lower/central viewport stops shifting for 2 consecutive checks, then dismounts with `T` |
+| `python azp.py goto-bearing <deg> [--sec 2.4] [--no-sprint] [--no-spam-f]` | `nav` | Align to compass bearing via minimap arrow (PCA narrow-tip detector + 180° flip guard, 2-pass ground / 3-pass flight closed-loop yaw) and sprint forward with minimap-diff unstuck |
+| `python azp.py fly-bearing <deg> [--sec 2.4] [--climb 2.5] [--no-boost] [--land]` | `nav` | 3D flight navigation: auto-summons flying mount (`T`, retries after step-back if blocked by overhang), calibrated 3-pass flight yaw (`5.8/5.5 px/deg` + 180° flip guard), `W+Space` diagonal climb (never presses `S`), `hazard_vignette` DoT abort, cliff climb unstuck, optional `safe_land()` |
+| `python azp.py land [--max-sec 6.5] [--hover]` | `nav` | Safe zero-fall-damage landing: pulses `Ctrl` until lower/central viewport stops shifting for 2 consecutive checks, then dismounts with `T` (unless `--hover`) |
+| `python azp.py hunt-pois [--steps 12] [--max-dist 72] [--no-fly] [--idle-sec 0] [--snap-dir <dir>]` | `nav`, `ocr_tpl`, `coop` | Autonomous closed-loop POI hunter: approaches nearest uncompleted minimap POI, escalates to 3D flight over cliffs (`dist_px >= 28`), auto-solves puzzles (`Q`/wheel), builds locked facilities (skipping `built_facility`), clears combat, aborts on `hazard_vignette`, and yields on physical user input when `--idle-sec > 0` |
 | `python azp.py nav-bake --map <png> --name <id> [--cell 6] [--preview <png>]` | `navmesh` | Bake 1920×1080 world map into cached 2.5D costmap (roads/grass/slope/ruins/water/boss/fog) |
 | `python azp.py nav-plan --name <id> --start X Y --goal X Y [--mode ground\|fly] [--preview <png>]` | `navmesh` | Plan smoothed 8-connected A* path using 2.5D costmap + online obstacle memory (with micro-leg merging) |
 | `python azp.py nav-obstacle <add\|portal\|list\|clear> --name <id> [--xy X Y]` | `navmesh` | Inspect or mutate persisted online obstacle stamps and 3D portal edges (`jump`/`mushroom`/`fly`) |
@@ -64,7 +65,7 @@ Run all live-window or MuMu IPC commands inside `windows-mcp` `PowerShell` from 
 | Command | Module | Purpose |
 | --- | --- | --- |
 | `python azp.py ocr [--frame <png>] [--roi x1 y1 x2 y2]` | `ocr_tpl` | Run RapidOCR (ONNX) on live client or offline screenshot ROI |
-| `python azp.py read-f [--frame <png>]` | `ocr_tpl` | Read active `[F]` interact prompt text and classify (`chest/facility/star_vein/gather/...`) |
+| `python azp.py read-f [--frame <png>]` | `ocr_tpl` | Read active `[F]` interact prompt text and classify (`chest/facility/built_facility/star_vein/gather/...`) |
 | `python azp.py hud-markers [--frame <png>] [--kinds ...] [--no-ocr]` | `ocr_tpl` | Detect 3D floating distance icons (`chest/challenge/wumi/egg`) + OCR distance (`m`) |
 | `python azp.py map-pois [--frame <png>] [--ocr]` | `ocr_tpl` | Extract world-map POIs (`star_vein_active/locked`, `facility_locked`, `shop_bag`, `boss`) with `safe_click` guard for `navmesh` |
 | `python azp.py check-anomaly [--frame <png>] [--no-ocr]` | `ocr_tpl` | Classify screen anomalies (`revive`, `tutorial_modal`, `confirm_dialog` + `have/need` check, `build_panel`, `floating_tip`) |

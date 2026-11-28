@@ -203,14 +203,32 @@ def check_hud_state(img: Image.Image) -> Dict[str, object]:
     # 6. Kibo puzzle glow on Q (gated on open-world HUD so bright gold icons on menus never false-trigger)
     near_kibo_puzzle = in_world_hud and detect_kibo_puzzle_hint(img)
 
-    # 7. Active flight state: bright white [Ctrl] (降低高度) keycap pill on right-hand HUD (0.347 flying vs 0.000 ground/wolf)
+    # 7. Active flight state: right-hand [Ctrl] (降低高度) keycap pill (0.347 flying vs 0.000 ground/wolf)
+    # OR bounded bottom-right "Space" + "Shift" circle-button captions (y=1030..1054: 0.070-0.091 / 0.056-0.080 flying
+    # vs 0.017-0.025 "E"/"R" on ground, upper-bounded <=0.145/0.135 so bright sunlit grass/snow never false-triggers),
+    # which stays visible even when NPC voice subtitles temporarily hide the right-hand keybind list.
     ctrl_pill = arr[591:619, 1812:1864]
     ctrl_white = float(((ctrl_pill[:, :, 0] > 215) & (ctrl_pill[:, :, 1] > 215) & (ctrl_pill[:, :, 2] > 215)).mean())
-    is_flying = in_world_hud and (ctrl_white > 0.18)
+    space_lbl = arr[1030:1054, 1718:1786]
+    shift_lbl = arr[1030:1054, 1814:1882]
+    space_lbl_w = float(((space_lbl[:, :, 0] > 185) & (space_lbl[:, :, 1] > 185) & (space_lbl[:, :, 2] > 185)).mean())
+    shift_lbl_w = float(((shift_lbl[:, :, 0] > 185) & (shift_lbl[:, :, 1] > 185) & (shift_lbl[:, :, 2] > 185)).mean())
+    is_flying = in_world_hud and (
+        (ctrl_white > 0.18) or ((0.055 <= space_lbl_w <= 0.145) and (0.045 <= shift_lbl_w <= 0.135))
+    )
+
+    # 8. Environmental DoT hazard (e.g. 迹影崖谷 -389 HP/s corruption mist / 雾叶密林 poison mist):
+    # HP bar flashes vivid crimson damage chunk while NOT in combat (0.128 in hazard vs 0.000 on autumn grass/red outfits).
+    hp_i16 = hp_strip.astype(np.int16)
+    hp_red = float(
+        ((hp_i16[:, :, 0] > 165) & (hp_i16[:, :, 1] < 95) & (hp_i16[:, :, 2] < 95) & ((hp_i16[:, :, 0] - hp_i16[:, :, 1]) > 85)).mean()
+    )
+    hazard_vignette = in_world_hud and (not in_combat) and (hp_red > 0.04)
 
     return {
         "in_world_hud": in_world_hud,
         "is_flying": is_flying,
+        "hazard_vignette": hazard_vignette,
         "loading": loading,
         "confirm_dialog": confirm_dialog,
         "in_combat": in_combat,
